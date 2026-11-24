@@ -182,3 +182,38 @@ def test_api_health_dashboard_and_images(tmp_path, monkeypatch):
         ing2 = client.post("/api/ingest", json=ingest_body)
         assert ing2.status_code == 200
         assert ing2.json()["alerts_sent"] == 0
+
+        # Test PATCH /api/items/{id} updating trusted_retailers to include acehardware.com
+        patched = client.patch(
+            f"/api/items/{item_id}",
+            json={
+                "trusted_retailers": [
+                    {"name": "Summit Racing", "domain": "summitracing.com", "uncommon": False},
+                    {"name": "Ace Hardware", "domain": "acehardware.com", "uncommon": False},
+                ]
+            },
+        )
+        assert patched.status_code == 200
+        domains = {r["domain"] for r in patched.json()["trusted_retailers"]}
+        assert "acehardware.com" in domains
+
+
+def test_ace_hardware_default_target_and_editorial_skip():
+    from argos.inductor import _merge_default_retailers
+    from argos.providers.universal_retail import _SKIP_URL_SEGMENTS
+
+    merged = _merge_default_retailers(
+        [{"name": "Home Depot", "domain": "www.homedepot.com", "uncommon": False}],
+        "tools",
+    )
+    domains = [r["domain"] for r in merged]
+    assert "homedepot.com" in domains
+    assert "acehardware.com" in domains
+    assert any(
+        seg in "https://www.acehardware.com/tips/power-tools/overview/"
+        for seg in _SKIP_URL_SEGMENTS
+    )
+    assert not any(
+        seg in "https://www.acehardware.com/departments/lawn-and-garden/7041025"
+        for seg in _SKIP_URL_SEGMENTS
+    )

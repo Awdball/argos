@@ -34,6 +34,8 @@ _SKIP_DOMAINS = {
     "instagram.com",
 }
 
+_SKIP_URL_SEGMENTS = ("/tips/", "/buying-guides/", "/how-to/", "/blog/")
+
 _USER_AGENT = (
     "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
     "(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
@@ -248,7 +250,8 @@ class UniversalRetailProvider(BaseProvider):
         def _collect_hits(hits: List[dict[str, str]]) -> None:
             for h in hits:
                 url = h["url"]
-                if url.lower().endswith(".pdf"):
+                lower_url = url.lower()
+                if lower_url.endswith(".pdf") or any(seg in lower_url for seg in _SKIP_URL_SEGMENTS):
                     continue
                 dom = _domain_of(url)
                 if not dom or any(dom.endswith(s) for s in _SKIP_DOMAINS):
@@ -271,7 +274,7 @@ class UniversalRetailProvider(BaseProvider):
         # Per-domain targeted fallback for trusted retailers crowded out by OR queries.
         if trusted_map and queries:
             missing_domains = [d for d in trusted_map if d not in seen_domains]
-            for dom in missing_domains[:5]:
+            for dom in missing_domains[:8]:
                 calls += 1
                 _collect_hits(
                     await search_web(f"site:{dom} {queries[0]}", settings, max_results=2)

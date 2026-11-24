@@ -30,6 +30,72 @@ _COVERED_DOMAINS = {
     "facebook.com",
 }
 
+DEFAULT_RETAILERS_BY_CATEGORY: Dict[str, List[Dict[str, Any]]] = {
+    "tools": [
+        {
+            "name": "Ace Hardware",
+            "domain": "acehardware.com",
+            "notes": "Hardware, power tools, outdoor equipment, and seasonal deals",
+            "uncommon": False,
+        }
+    ],
+    "home": [
+        {
+            "name": "Ace Hardware",
+            "domain": "acehardware.com",
+            "notes": "Hardware, home improvement, and seasonal deals",
+            "uncommon": False,
+        }
+    ],
+    "outdoor": [
+        {
+            "name": "Ace Hardware",
+            "domain": "acehardware.com",
+            "notes": "Lawn, garden, outdoor power equipment, and grills",
+            "uncommon": False,
+        }
+    ],
+    "automotive": [
+        {
+            "name": "Ace Hardware",
+            "domain": "acehardware.com",
+            "notes": "Automotive tools, fasteners, and shop equipment",
+            "uncommon": False,
+        }
+    ],
+    "general": [
+        {
+            "name": "Ace Hardware",
+            "domain": "acehardware.com",
+            "notes": "Hardware, tools, home, and outdoor deals",
+            "uncommon": False,
+        }
+    ],
+}
+
+
+def _merge_default_retailers(
+    trusted_retailers: List[Any], category: str
+) -> List[Dict[str, Any]]:
+    """Ensure curated category retailer targets (e.g., acehardware.com) are included."""
+    merged: List[Dict[str, Any]] = []
+    seen: set[str] = set()
+    for tr in trusted_retailers:
+        if not isinstance(tr, dict):
+            continue
+        dom = str(tr.get("domain") or "").strip().lower().lstrip("www.")
+        if not dom or dom in seen:
+            continue
+        seen.add(dom)
+        merged.append({**tr, "domain": dom})
+
+    for default_tr in DEFAULT_RETAILERS_BY_CATEGORY.get(category.lower(), []):
+        dom = default_tr["domain"]
+        if dom not in seen:
+            seen.add(dom)
+            merged.append(dict(default_tr))
+    return merged
+
 
 def upsert_provider_gap(
     session: Session,
@@ -217,6 +283,7 @@ async def induct_item(
             '  "induction_summary": "concise 2-sentence buyer brief"\n'
             '}\n'
             "Mark uncommon=true for niche/forum-recommended retailers (not big-box/Amazon/eBay). "
+            "Include acehardware.com (Ace Hardware) as a valid retailer target for tools, hardware, outdoor, home, or automotive items. "
             "Populate bundle_components ONLY if the user mentioned optional kit/bundle add-ons."
         )
         user_prompt = (
@@ -237,9 +304,11 @@ async def induct_item(
     used_target = _to_float(plan.get("used_deal_target_usd"))
     radius = int(plan.get("radius_miles") or recommended_radius_miles(retail_baseline, settings))
 
+    category = str(plan.get("category") or "general")[:100]
     trusted_retailers = plan.get("trusted_retailers") or []
     if not isinstance(trusted_retailers, list):
         trusted_retailers = []
+    trusted_retailers = _merge_default_retailers(trusted_retailers, category)
 
     item_name = str(plan.get("name") or raw_request)[:255]
     item_queries = [str(q) for q in (plan.get("search_queries") or [short_q])][:5]
@@ -255,7 +324,7 @@ async def induct_item(
         item = WatchItem(
             name=item_name,
             raw_request=raw_request,
-            category=str(plan.get("category") or "general")[:100],
+            category=category,
             search_queries=item_queries,
             required_tokens=plan.get("required_tokens") or [],
             negative_keywords=[str(k) for k in (plan.get("negative_keywords") or [])],

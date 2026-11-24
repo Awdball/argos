@@ -69,6 +69,7 @@ class WatchPatchRequest(BaseModel):
     search_queries: Optional[List[str]] = None
     required_tokens: Optional[List[Any]] = None
     negative_keywords: Optional[List[str]] = None
+    trusted_retailers: Optional[List[Dict[str, Any]]] = None
     active_providers: Optional[List[str]] = None
 
 
