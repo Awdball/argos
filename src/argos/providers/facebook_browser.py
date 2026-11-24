@@ -6,6 +6,7 @@ import logging
 import os
 import random
 import re
+import shutil
 from typing import Any, Dict, List, Optional
 from urllib.parse import quote_plus
 
@@ -137,7 +138,9 @@ class FacebookBrowserProvider(BaseProvider):
         gated_error: Optional[str] = None
 
         async with async_playwright() as p:
+            exe_path = shutil.which("chromium") or shutil.which("chromium-browser") or None
             browser = await p.chromium.launch(
+                executable_path=exe_path,
                 headless=True,
                 args=[
                     "--disable-blink-features=AutomationControlled",

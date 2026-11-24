@@ -11,15 +11,14 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     tzdata \
     ca-certificates \
     curl \
+    chromium \
+    fonts-liberation \
     && rm -rf /var/lib/apt/lists/*
 
 COPY pyproject.toml README.md ./
 COPY src/ ./src/
 
-RUN pip install --no-cache-dir . && \
-    apt-get update && \
-    playwright install --with-deps chromium && \
-    rm -rf /var/lib/apt/lists/*
+RUN pip install --no-cache-dir .
 
 EXPOSE 8080
 
