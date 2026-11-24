@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "argos"
-version = "0.1.0"
+version = "0.2.0"
 description = "Universal second-hand & first-hand deal-hunting intelligence framework with Hermes + Telegram integration."
 readme = "README.md"
 requires-python = ">=3.10"
@@ -37,7 +37,7 @@ argos = "argos.main:run"
 where = ["src"]
 
 [tool.setuptools.package-data]
-argos = ["templates/*.html"]
+argos = ["templates/*.html", "static/*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

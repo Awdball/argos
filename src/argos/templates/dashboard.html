@@ -3,216 +3,224 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Argos — Universal Deal Intelligence</title>
-  <style>
-    :root {
-      --bg: #0f172a;
-      --card: #1e293b;
-      --border: #334155;
-      --text: #e2e8f0;
-      --muted: #94a3b8;
-      --accent: #38bdf8;
-      --good: #34d399;
-      --warn: #fbbf24;
-      --hot: #fb7185;
-    }
-    * { box-sizing: border-box; }
-    body {
-      margin: 0;
-      padding: 24px;
-      font-family: system-ui, -apple-system, sans-serif;
-      background: var(--bg);
-      color: var(--text);
-      line-height: 1.5;
-    }
-    .container { max-width: 1200px; margin: 0 auto; }
-    header {
-      display: flex;
-      justify-content: space-between;
-      align-items: baseline;
-      border-bottom: 1px solid var(--border);
-      padding-bottom: 12px;
-      margin-bottom: 24px;
-    }
-    h1 { margin: 0; font-size: 1.6rem; color: var(--accent); }
-    h2 { font-size: 1.15rem; margin: 24px 0 12px; color: var(--text); }
-    .meta { color: var(--muted); font-size: 0.9rem; }
-    .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 12px; margin-bottom: 20px; }
-    .card {
-      background: var(--card);
-      border: 1px solid var(--border);
-      border-radius: 10px;
-      padding: 14px 16px;
-    }
-    .stat-num { font-size: 1.5rem; font-weight: 700; color: var(--accent); }
-    table { width: 100%; border-collapse: collapse; background: var(--card); border: 1px solid var(--border); border-radius: 10px; overflow: hidden; }
-    th, td { text-align: left; padding: 10px 12px; border-bottom: 1px solid var(--border); font-size: 0.9rem; vertical-align: top; }
-    th { color: var(--muted); font-weight: 600; background: #162032; }
-    a { color: var(--accent); text-decoration: none; }
-    a:hover { text-decoration: underline; }
-    .badge { display: inline-block; padding: 2px 8px; border-radius: 999px; font-size: 0.78rem; font-weight: 600; border: 1px solid var(--border); }
-    .badge.active { color: var(--good); border-color: var(--good); }
-    .badge.hot { color: var(--hot); border-color: var(--hot); }
-    .badge.muted { color: var(--muted); }
-    .badge.warn { color: var(--warn); border-color: var(--warn); }
-    code { background: #0b1220; padding: 1px 5px; border-radius: 4px; font-size: 0.85em; }
-  </style>
+  <meta name="color-scheme" content="light dark" />
+  <script>
+    try {
+      document.querySelector('meta[name="color-scheme"]').content =
+        localStorage.getItem("color-scheme") ?? "light dark";
+    } catch {}
+  </script>
+  <title>Argos — Visual Deal Intelligence</title>
+  <link rel="stylesheet" href="/static/app.css?v={{ version }}" />
 </head>
 <body>
-  <div class="container">
-    <header>
-      <div>
-        <h1>Argos Deal Intelligence</h1>
-        <div class="meta">Home Postal: <code>{{ home_postal }}</code> &middot; v{{ version }}</div>
+  <header class="topbar">
+    <div class="topbar-inner">
+      <div class="brand">
+        <div class="brand-mark" aria-hidden="true">A</div>
+        <div>
+          <div class="brand-title">Argos Deal Intelligence</div>
+          <div class="brand-sub">
+            Home ZIP <code>{{ home_postal }}</code> &middot; Bot <code>@awdargos_bot</code> &middot; v{{ version }}
+          </div>
+        </div>
       </div>
-      <div class="meta">Telegram Bot: <code>@awdargos_bot</code></div>
-    </header>
-
-    <div class="grid">
-      <div class="card">
-        <div class="meta">Watched Items</div>
-        <div class="stat-num">{{ items|length }}</div>
-      </div>
-      <div class="card">
-        <div class="meta">Tracked Listings</div>
-        <div class="stat-num">{{ listings|length }}</div>
-      </div>
-      <div class="card">
-        <div class="meta">Configured Providers</div>
-        <div class="stat-num">{{ providers|selectattr("configured")|list|length }} / {{ providers|length }}</div>
-      </div>
-      <div class="card">
-        <div class="meta">Open Provider Gaps</div>
-        <div class="stat-num">{{ gaps|selectattr("status", "equalto", "open")|list|length }}</div>
+      <div class="topbar-actions">
+        <span id="sync-status" class="sync-pill" aria-live="polite">Live</span>
+        <button type="button" id="theme-toggle-btn" class="btn btn-ghost" aria-label="Toggle color theme">
+          <span class="theme-label-dark">Dark UI</span>
+          <span class="theme-label-light">Light UI</span>
+        </button>
+        <button type="button" id="refresh-btn" class="btn btn-secondary">Refresh</button>
+        <button type="button" id="scan-all-btn" class="btn btn-secondary">Scan All Active</button>
+        <button type="button" id="open-add-btn" class="btn btn-primary">+ Add Watch Item</button>
       </div>
     </div>
+  </header>
 
-    <h2>Watched Items</h2>
-    <table>
-      <thead>
-        <tr>
-          <th>ID</th>
-          <th>Item</th>
-          <th>Status</th>
-          <th>Retail Base</th>
-          <th>New Target</th>
-          <th>Used Target</th>
-          <th>Radius</th>
-          <th>Exclusions</th>
-        </tr>
-      </thead>
-      <tbody>
-        {% for item in items %}
-        <tr>
-          <td>#{{ item.id }}</td>
-          <td>
-            <strong>{{ item.name }}</strong>
-            {% if item.is_hot %}<span class="badge hot">HOT</span>{% endif %}
-            <div class="meta">{{ item.category }} &middot; queries: {{ item.search_queries|join(", ") }}</div>
-          </td>
-          <td><span class="badge {% if item.status == 'active' %}active{% else %}muted{% endif %}">{{ item.status }}</span></td>
-          <td>${{ "%.0f"|format(item.retail_baseline_usd) if item.retail_baseline_usd else "—" }}</td>
-          <td>${{ "%.0f"|format(item.new_deal_target_usd) if item.new_deal_target_usd else "—" }}</td>
-          <td>${{ "%.0f"|format(item.used_deal_target_usd) if item.used_deal_target_usd else "—" }}</td>
-          <td>{{ item.radius_miles }} mi</td>
-          <td class="meta">{{ item.negative_keywords|join(", ") }}</td>
-        </tr>
-        {% else %}
-        <tr><td colspan="8" class="meta">No watched items yet.</td></tr>
-        {% endfor %}
-      </tbody>
-    </table>
+  <main class="container">
+    <section class="kpi-grid" aria-label="Watchlist summary">
+      <article class="kpi-card">
+        <div class="kpi-label">Active Watches</div>
+        <div class="kpi-value" id="kpi-active">{{ summary.watches_active }}</div>
+        <div class="kpi-sub" id="kpi-hot">{{ summary.watches_hot }} hot &middot; {{ summary.watches_total }} total</div>
+      </article>
+      <article class="kpi-card">
+        <div class="kpi-label">Viable 2nd-Hand</div>
+        <div class="kpi-value good" id="kpi-secondhand">{{ summary.viable_secondhand_count }}</div>
+        <div class="kpi-sub">Active local &amp; shipped candidates</div>
+      </article>
+      <article class="kpi-card">
+        <div class="kpi-label">Below-Target Retail</div>
+        <div class="kpi-value accent" id="kpi-below-target">{{ summary.below_target_retail_count }}</div>
+        <div class="kpi-sub" id="kpi-best-discount">
+          {% if summary.best_discount_pct is not none %}Best discount {{ summary.best_discount_pct }}%{% else %}Scanning retailers{% endif %}
+        </div>
+      </article>
+      <article class="kpi-card">
+        <div class="kpi-label">Providers &amp; Budget</div>
+        <div class="kpi-value" id="kpi-providers">{{ summary.providers_configured }} / {{ summary.providers_total }}</div>
+        <div class="kpi-sub" id="kpi-budget">Apify ${{ "%.2f"|format(summary.apify_spent_usd) }} / ${{ "%.2f"|format(summary.apify_budget_usd) }}</div>
+      </article>
+      <article class="kpi-card">
+        <div class="kpi-label">Open Scraper Gaps</div>
+        <div class="kpi-value warn" id="kpi-gaps">{{ summary.open_gaps_count }}</div>
+        <div class="kpi-sub">Niche or bot-blocked sites</div>
+      </article>
+    </section>
 
-    <h2>Recent Listings</h2>
-    <table>
-      <thead>
-        <tr>
-          <th>Watch</th>
-          <th>Provider</th>
-          <th>Listing</th>
-          <th>Landed</th>
-          <th>Distance</th>
-          <th>Score</th>
-          <th>State</th>
-        </tr>
-      </thead>
-      <tbody>
-        {% for l in listings %}
-        <tr>
-          <td>#{{ l.watch_item_id }}</td>
-          <td><code>{{ l.provider }}</code></td>
-          <td>
-            <a href="{{ l.url }}" target="_blank" rel="noopener">{{ l.title }}</a>
-            <div class="meta">{{ l.deal_reason }}</div>
-          </td>
-          <td>${{ "%.2f"|format(l.landed_cost_usd) }}</td>
-          <td>{{ "%.1f mi"|format(l.distance_miles) if l.distance_miles is not none else l.location_text or "—" }}</td>
-          <td>{{ "%.0f"|format(l.deal_score) }}</td>
-          <td><span class="badge">{{ l.state }}</span></td>
-        </tr>
-        {% else %}
-        <tr><td colspan="7" class="meta">No listings evaluated yet.</td></tr>
-        {% endfor %}
-      </tbody>
-    </table>
+    <div class="tabs-shell">
+      <div class="tablist" role="tablist" aria-label="Argos workspace views">
+        <button type="button" role="tab" id="tab-watchlist" aria-selected="true" tabindex="0" data-panel="panel-watchlist">
+          Watchlist
+        </button>
+        <button type="button" role="tab" id="tab-deals" aria-selected="false" tabindex="-1" data-panel="panel-deals">
+          2nd-Hand Deals (<span id="tab-deals-count">{{ summary.viable_secondhand_count }}</span>)
+        </button>
+        <button type="button" role="tab" id="tab-gaps" aria-selected="false" tabindex="-1" data-panel="panel-gaps">
+          Retailers &amp; Gaps (<span id="tab-gaps-count">{{ summary.open_gaps_count }}</span>)
+        </button>
+        <button type="button" role="tab" id="tab-providers" aria-selected="false" tabindex="-1" data-panel="panel-providers">
+          Providers &amp; Cadence
+        </button>
+      </div>
 
-    <h2>Providers</h2>
-    <table>
-      <thead>
-        <tr>
-          <th>Provider</th>
-          <th>Market</th>
-          <th>Status</th>
-          <th>Normal / Hot Cadence</th>
-          <th>Cost / Call</th>
-        </tr>
-      </thead>
-      <tbody>
-        {% for p in providers %}
-        <tr>
-          <td><strong>{{ p.display_name }}</strong> (<code>{{ p.name }}</code>)</td>
-          <td>{{ p.market_type }}</td>
-          <td>
-            {% if p.configured %}
-              <span class="badge active">configured</span>
-            {% else %}
-              <span class="badge warn">awaiting key</span>
-            {% endif %}
-          </td>
-          <td>{{ p.normal_interval_minutes }}m / {{ p.hot_interval_minutes }}m</td>
-          <td>${{ "%.3f"|format(p.estimated_cost_per_call_usd) }}</td>
-        </tr>
-        {% endfor %}
-      </tbody>
-    </table>
+      <section role="tabpanel" id="panel-watchlist" aria-labelledby="tab-watchlist" tabindex="0">
+        <div class="panel-inner">
+          <div class="toolbar">
+            <input type="search" id="filter-search" class="input" placeholder="Filter by item name, query, or retailer..." aria-label="Filter watched items" />
+            <select id="filter-status" class="select" aria-label="Filter by status">
+              <option value="active" selected>Active</option>
+              <option value="all">All Statuses</option>
+              <option value="pending_approval">Pending Approval</option>
+              <option value="paused">Paused</option>
+              <option value="archived">Archived</option>
+            </select>
+            <select id="filter-category" class="select" aria-label="Filter by category">
+              <option value="all">All Categories</option>
+            </select>
+            <label class="check-pill">
+              <input type="checkbox" id="filter-hot" />
+              <span>Hot Only</span>
+            </label>
+            <select id="sort-items" class="select" aria-label="Sort watched items">
+              <option value="deals">Sort: Best Deals</option>
+              <option value="value">Sort: Highest Value</option>
+              <option value="newest">Sort: Newest</option>
+            </select>
+          </div>
+          <div id="watch-grid" class="watch-grid"></div>
+        </div>
+      </section>
 
-    <h2>Provider Gaps (Niche / Blocked Retailers)</h2>
-    <table>
-      <thead>
-        <tr>
-          <th>Retailer</th>
-          <th>Domain</th>
-          <th>Reason</th>
-          <th>Sample Item</th>
-          <th>Hits</th>
-          <th>Status</th>
-        </tr>
-      </thead>
-      <tbody>
-        {% for g in gaps %}
-        <tr>
-          <td>{{ g.retailer_name }}</td>
-          <td><code>{{ g.domain }}</code></td>
-          <td class="meta">{{ g.reason }}</td>
-          <td class="meta">{{ g.sample_item }}</td>
-          <td>{{ g.occurrences }}</td>
-          <td><span class="badge warn">{{ g.status }}</span></td>
-        </tr>
-        {% else %}
-        <tr><td colspan="6" class="meta">No gaps logged yet.</td></tr>
-        {% endfor %}
-      </tbody>
-    </table>
-  </div>
+      <section role="tabpanel" id="panel-deals" aria-labelledby="tab-deals" hidden>
+        <div class="panel-inner">
+          <div class="section-head">
+            <h2>Viable 2nd-Hand Deals Across All Watches</h2>
+            <p class="muted">Sorted by target qualification, score, and landed cost. Quiesce actions update filtering immediately.</p>
+          </div>
+          <div id="all-deals-list" class="deals-feed"></div>
+        </div>
+      </section>
+
+      <section role="tabpanel" id="panel-gaps" aria-labelledby="tab-gaps" hidden>
+        <div class="panel-inner">
+          <div class="section-head">
+            <h2 id="gaps-table-caption">Niche &amp; Blocked Retailers (Provider Gaps)</h2>
+            <p class="muted">Sites recommended by forum/Reddit research or returning anti-bot blocks during scans, ready for custom scraper plugins.</p>
+          </div>
+          <div tabindex="0" role="region" aria-labelledby="gaps-table-caption" class="table-wrapper">
+            <table class="data-table gaps-table">
+              <thead>
+                <tr>
+                  <th>Retailer</th>
+                  <th>Domain</th>
+                  <th>Source</th>
+                  <th>Reason</th>
+                  <th>Sample Item</th>
+                  <th>Hits</th>
+                  <th>Status</th>
+                </tr>
+              </thead>
+              <tbody id="gaps-tbody"></tbody>
+            </table>
+          </div>
+        </div>
+      </section>
+
+      <section role="tabpanel" id="panel-providers" aria-labelledby="tab-providers" hidden>
+        <div class="panel-inner">
+          <div class="section-head">
+            <h2 id="providers-table-caption">Marketplace &amp; Retail Provider Plugins</h2>
+            <p class="muted">Normal vs. Hot check cadence and monthly metered API usage guardrails.</p>
+          </div>
+          <div class="budget-card" id="budget-panel"></div>
+          <div tabindex="0" role="region" aria-labelledby="providers-table-caption" class="table-wrapper">
+            <table class="data-table providers-table">
+              <thead>
+                <tr>
+                  <th>Provider</th>
+                  <th>Market</th>
+                  <th>Status</th>
+                  <th>Normal / Hot Cadence</th>
+                  <th>Capabilities</th>
+                  <th>Month Usage</th>
+                </tr>
+              </thead>
+              <tbody id="providers-tbody"></tbody>
+            </table>
+          </div>
+        </div>
+      </section>
+    </div>
+  </main>
+
+  <!-- Add Watch Item Modal -->
+  <dialog id="add-dialog" closedby="any" aria-labelledby="add-dialog-title">
+    <div class="dialog-header">
+      <h1 id="add-dialog-title">Induct New Watch Item</h1>
+      <button type="button" class="btn btn-ghost btn-icon" data-close-dialog aria-label="Close add dialog">&times;</button>
+    </div>
+    <form id="add-item-form" class="dialog-body">
+      <label class="field">
+        <span class="field-label">What are you hunting for?</span>
+        <textarea id="add-raw-request" class="textarea" rows="3" required autofocus placeholder="e.g. Milwaukee M18 Fuel 1/2 impact wrench or kit with 5.0Ah battery"></textarea>
+        <span class="field-hint">Argos will research new retail baselines, secondary comps, negative keywords, trusted retailers, geo-radius, and fetch a product image automatically.</span>
+      </label>
+      <div class="checkbox-stack">
+        <label class="check-row">
+          <input type="checkbox" id="add-is-hot" />
+          <span>Start as <strong>HOT item</strong> (faster local &amp; retail polling)</span>
+        </label>
+        <label class="check-row">
+          <input type="checkbox" id="add-auto-activate" checked />
+          <span>Auto-activate watch immediately after research</span>
+        </label>
+        <label class="check-row">
+          <input type="checkbox" id="add-notify-tg" checked />
+          <span>Send Induction Card to Telegram (<code>@awdargos_bot</code>)</span>
+        </label>
+      </div>
+      <div id="add-progress" class="progress-banner" hidden></div>
+      <div class="dialog-footer">
+        <button type="button" class="btn btn-secondary" data-close-dialog>Cancel</button>
+        <button type="submit" id="add-submit-btn" class="btn btn-primary">Research &amp; Induct</button>
+      </div>
+    </form>
+  </dialog>
+
+  <!-- Item Detail & Edit Modal -->
+  <dialog id="detail-dialog" class="dialog-wide" closedby="any" aria-labelledby="detail-dialog-title">
+    <div class="dialog-header">
+      <h1 id="detail-dialog-title">Watch Details</h1>
+      <button type="button" class="btn btn-ghost btn-icon" data-close-dialog aria-label="Close detail dialog">&times;</button>
+    </div>
+    <div id="detail-content" class="dialog-body"></div>
+  </dialog>
+
+  <div id="toast-region" class="toast-region" aria-live="polite"></div>
+
+  <script id="argos-bootstrap" type="application/json">{{ initial_json|safe }}</script>
+  <script src="/static/app.js?v={{ version }}" defer></script>
 </body>
 </html>

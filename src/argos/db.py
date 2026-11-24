@@ -3,7 +3,7 @@
 from contextlib import contextmanager
 from typing import Iterator, Optional
 
-from sqlalchemy import Engine, create_engine, text
+from sqlalchemy import Engine, create_engine, inspect, text
 from sqlalchemy.orm import Session, sessionmaker
 from sqlalchemy.pool import StaticPool
 
@@ -35,10 +35,33 @@ def get_engine() -> Engine:
     return _engine
 
 
+def ensure_schema_migrations(engine: Engine) -> None:
+    """Apply lightweight idempotent column migrations for existing tables."""
+    inspector = inspect(engine)
+    if "watch_items" not in inspector.get_table_names():
+        return
+    cols = {col["name"] for col in inspector.get_columns("watch_items")}
+    binary_type = "BYTEA" if engine.dialect.name == "postgresql" else "BLOB"
+    statements = []
+    if "image_url" not in cols:
+        statements.append("ALTER TABLE watch_items ADD COLUMN image_url TEXT NOT NULL DEFAULT ''")
+    if "image_data" not in cols:
+        statements.append(f"ALTER TABLE watch_items ADD COLUMN image_data {binary_type}")
+    if "image_mime" not in cols:
+        statements.append(
+            "ALTER TABLE watch_items ADD COLUMN image_mime VARCHAR(64) NOT NULL DEFAULT ''"
+        )
+    if statements:
+        with engine.begin() as conn:
+            for stmt in statements:
+                conn.execute(text(stmt))
+
+
 def init_db(database_url: Optional[str] = None) -> None:
-    """Ensure tables exist idempotently."""
+    """Ensure tables and additive column migrations exist idempotently."""
     engine = configure_db(database_url) if database_url else get_engine()
     Base.metadata.create_all(engine)
+    ensure_schema_migrations(engine)
 
 
 @contextmanager

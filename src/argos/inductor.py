@@ -13,6 +13,7 @@ from sqlalchemy.orm import Session
 from argos.config import Settings
 from argos.db import get_session
 from argos.geo import recommended_radius_miles
+from argos.image_fetcher import fetch_product_image
 from argos.models import PriceBenchmark, ProviderGap, WatchItem, utcnow
 from argos.ollama_client import chat_json
 from argos.providers.craigslist import parse_craigslist_html
@@ -180,6 +181,7 @@ async def induct_item(
     is_hot: bool = False,
     auto_activate: bool = False,
     override_payload: Optional[Dict[str, Any]] = None,
+    fetch_image: bool = True,
 ) -> int:
     """Research an item outside any DB transaction, then persist and return its ID."""
     short_q = _clean_short_query(raw_request)
@@ -239,12 +241,22 @@ async def induct_item(
     if not isinstance(trusted_retailers, list):
         trusted_retailers = []
 
+    item_name = str(plan.get("name") or raw_request)[:255]
+    item_queries = [str(q) for q in (plan.get("search_queries") or [short_q])][:5]
+    image_meta: Dict[str, Any] = {"image_url": "", "image_data": None, "image_mime": ""}
+    if fetch_image:
+        image_meta = await fetch_product_image(
+            item_name=item_name,
+            search_queries=item_queries,
+            preferred_url=plan.get("image_url"),
+        )
+
     with get_session() as session:
         item = WatchItem(
-            name=str(plan.get("name") or raw_request)[:255],
+            name=item_name,
             raw_request=raw_request,
             category=str(plan.get("category") or "general")[:100],
-            search_queries=[str(q) for q in (plan.get("search_queries") or [short_q])][:5],
+            search_queries=item_queries,
             required_tokens=plan.get("required_tokens") or [],
             negative_keywords=[str(k) for k in (plan.get("negative_keywords") or [])],
             bundle_components=plan.get("bundle_components") or [],
@@ -258,6 +270,9 @@ async def induct_item(
             is_hot=is_hot,
             status="active" if auto_activate else "pending_approval",
             induction_summary=str(plan.get("induction_summary") or ""),
+            image_url=str(image_meta.get("image_url") or ""),
+            image_data=image_meta.get("image_data"),
+            image_mime=str(image_meta.get("image_mime") or ""),
         )
         session.add(item)
         session.flush()

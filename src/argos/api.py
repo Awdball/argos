@@ -1,19 +1,23 @@
 """FastAPI REST API and dashboard routes for Argos."""
 
+import json
 import logging
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from fastapi import FastAPI, HTTPException, Query, Request
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, RedirectResponse, Response
+from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel, Field
 from sqlalchemy import func, select
 
 from argos import __version__
+from argos.companion import build_dashboard_payload
 from argos.config import Settings, get_settings
 from argos.db import check_db_health, get_session, init_db
+from argos.image_fetcher import fallback_svg_for_category, fetch_product_image
 from argos.inductor import induct_item
 from argos.models import (
     ApiUsageLog,
@@ -30,7 +34,9 @@ from argos.telegram_bot import ArgosTelegramBot
 
 logger = logging.getLogger(__name__)
 
-_TEMPLATES_DIR = Path(__file__).resolve().parent / "templates"
+_BASE_DIR = Path(__file__).resolve().parent
+_TEMPLATES_DIR = _BASE_DIR / "templates"
+_STATIC_DIR = _BASE_DIR / "static"
 
 
 class InductRequest(BaseModel):
@@ -38,7 +44,12 @@ class InductRequest(BaseModel):
     is_hot: bool = False
     auto_activate: bool = False
     notify_telegram: bool = True
+    fetch_image: bool = True
     override_payload: Optional[Dict[str, Any]] = None
+
+
+class RefreshImageRequest(BaseModel):
+    image_url: Optional[str] = None
 
 
 class WatchPatchRequest(BaseModel):
@@ -61,6 +72,7 @@ class FeedbackRequest(BaseModel):
 
 
 def _serialize_item(item: WatchItem, include_details: bool = False) -> dict:
+    ts = int(item.updated_at.timestamp()) if item.updated_at else 0
     data = {
         "id": item.id,
         "name": item.name,
@@ -80,6 +92,9 @@ def _serialize_item(item: WatchItem, include_details: bool = False) -> dict:
         "is_hot": item.is_hot,
         "status": item.status,
         "induction_summary": item.induction_summary,
+        "image_url": item.image_url,
+        "has_image": bool(item.image_data or item.image_url),
+        "image_endpoint": f"/api/items/{item.id}/image?v={ts}",
         "created_at": item.created_at.isoformat() if item.created_at else None,
         "updated_at": item.updated_at.isoformat() if item.updated_at else None,
     }
@@ -166,6 +181,8 @@ def create_app(
     app.state.settings = cfg
     app.state.bot = bot
     app.state.scheduler = scheduler
+    _STATIC_DIR.mkdir(parents=True, exist_ok=True)
+    app.mount("/static", StaticFiles(directory=str(_STATIC_DIR)), name="static")
 
     @app.get("/api/health")
     def health() -> dict:
@@ -188,53 +205,85 @@ def create_app(
 
     @app.get("/", response_class=HTMLResponse)
     def dashboard(request: Request):
-        provs = list_providers(cfg)
         with get_session() as session:
-            items = session.scalars(select(WatchItem).order_by(WatchItem.id.desc())).all()
-            listings = session.scalars(
-                select(Listing).order_by(Listing.last_seen_at.desc()).limit(40)
-            ).all()
-            gaps = session.scalars(
-                select(ProviderGap).order_by(ProviderGap.occurrences.desc()).limit(25)
-            ).all()
-            usages = session.scalars(select(ApiUsageLog)).all()
-            serialized_items = [_serialize_item(it, include_details=True) for it in items]
-            serialized_listings = [_serialize_listing(l) for l in listings]
-            serialized_gaps = [
-                {
-                    "id": g.id,
-                    "domain": g.domain,
-                    "retailer_name": g.retailer_name,
-                    "recommended_by": g.recommended_by,
-                    "reason": g.reason,
-                    "sample_item": g.sample_item,
-                    "status": g.status,
-                    "occurrences": g.occurrences,
-                }
-                for g in gaps
-            ]
-            usage_rows = [
-                {
-                    "provider": u.provider,
-                    "period_month": u.period_month,
-                    "calls_count": u.calls_count,
-                    "estimated_cost_usd": u.estimated_cost_usd,
-                }
-                for u in usages
-            ]
+            payload = build_dashboard_payload(session, cfg)
+        safe_json = (
+            json.dumps(payload)
+            .replace("<", "\\u003c")
+            .replace(">", "\\u003e")
+            .replace("&", "\\u0026")
+        )
         return templates.TemplateResponse(
             request=request,
             name="dashboard.html",
             context={
                 "version": __version__,
                 "home_postal": cfg.home_postal,
-                "items": serialized_items,
-                "listings": serialized_listings,
-                "providers": provs,
-                "gaps": serialized_gaps,
-                "usages": usage_rows,
+                "initial_json": safe_json,
+                "summary": payload["summary"],
             },
         )
+
+    @app.get("/api/dashboard")
+    def get_dashboard() -> dict:
+        with get_session() as session:
+            return build_dashboard_payload(session, cfg)
+
+    @app.get("/api/items/{item_id}/image")
+    def get_item_image(item_id: int) -> Response:
+        with get_session() as session:
+            item = session.get(WatchItem, item_id)
+            if not item:
+                raise HTTPException(status_code=404, detail="Watch item not found")
+            if item.image_data:
+                return Response(
+                    content=item.image_data,
+                    media_type=item.image_mime or "image/jpeg",
+                    headers={"Cache-Control": "public, max-age=86400"},
+                )
+            if item.image_url:
+                return RedirectResponse(item.image_url, status_code=302)
+            svg = fallback_svg_for_category(item.category, item.name)
+            return Response(
+                content=svg,
+                media_type="image/svg+xml",
+                headers={"Cache-Control": "public, max-age=3600"},
+            )
+
+    @app.post("/api/items/{item_id}/refresh-image")
+    async def refresh_item_image(
+        item_id: int, body: Optional[RefreshImageRequest] = None
+    ) -> dict:
+        with get_session() as session:
+            item = session.get(WatchItem, item_id)
+            if not item:
+                raise HTTPException(status_code=404, detail="Watch item not found")
+            name = item.name
+            queries = list(item.search_queries or [])
+        preferred = body.image_url if body else None
+        meta = await fetch_product_image(
+            item_name=name,
+            search_queries=queries,
+            preferred_url=preferred,
+        )
+        with get_session() as session:
+            item = session.get(WatchItem, item_id)
+            if not item:
+                raise HTTPException(status_code=404, detail="Watch item not found")
+            if meta.get("image_url"):
+                item.image_url = str(meta["image_url"])
+                item.image_data = meta.get("image_data")
+                item.image_mime = str(meta.get("image_mime") or "")
+                item.updated_at = utcnow()
+                session.flush()
+            ts = int(item.updated_at.timestamp()) if item.updated_at else 0
+            return {
+                "id": item.id,
+                "has_image": bool(item.image_data or item.image_url),
+                "image_url": item.image_url,
+                "image_endpoint": f"/api/items/{item.id}/image?v={ts}",
+                "image_bytes": len(item.image_data) if item.image_data else 0,
+            }
 
     @app.get("/api/items")
     def get_items() -> List[dict]:
@@ -250,6 +299,7 @@ def create_app(
             is_hot=req.is_hot,
             auto_activate=req.auto_activate,
             override_payload=req.override_payload,
+            fetch_image=req.fetch_image,
         )
         with get_session() as session:
             item = session.get(WatchItem, item_id)
