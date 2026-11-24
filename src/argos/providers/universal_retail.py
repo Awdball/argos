@@ -61,11 +61,27 @@ def _safe_float(val: Any) -> Optional[float]:
         return None
 
 
+def _is_out_of_stock_text(text: str) -> bool:
+    head = (text or "")[:1200].lower()
+    return any(
+        tok in head
+        for tok in (
+            "out of stock",
+            "sold out",
+            "currently unavailable",
+            "no longer available",
+            "discontinued",
+            "404 not found",
+            "page not found",
+        )
+    )
+
+
 def extract_price_from_text(
     text: str, baseline_usd: Optional[float] = None
 ) -> Optional[float]:
     """Extract current retail price from indexed snippet/Exa text, ignoring savings/shipping."""
-    if not text:
+    if not text or _is_out_of_stock_text(text):
         return None
     # Focus on hero section at top of page before related-parts carousels.
     head = text[:1000]
@@ -147,6 +163,9 @@ def extract_product_metadata(html: str) -> Optional[dict]:
             )
             for off in offer_list:
                 if not isinstance(off, dict):
+                    continue
+                avail = str(off.get("availability") or "").lower()
+                if any(tok in avail for tok in ("outofstock", "soldout", "discontinued")):
                     continue
                 price = _safe_float(off.get("price") or off.get("lowPrice"))
                 if price and price > 1.0:

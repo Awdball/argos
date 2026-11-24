@@ -138,3 +138,48 @@ def test_extract_price_from_text_exa_and_split_cents():
 
     ship_only = "Free shipping over $99! Accessories starting at $19.99."
     assert extract_price_from_text(ship_only, baseline_usd=500.0) is None
+
+    oos_txt = "Milwaukee M18 Hedge Trimmer $129.00 - Out of Stock"
+    assert extract_price_from_text(oos_txt, baseline_usd=219.0) is None
+
+
+def test_slickdeals_expiry_and_out_of_stock_guards():
+    from datetime import datetime, timezone
+    import email.utils
+    from argos.providers.slickdeals import is_slickdeals_thread_expired, parse_slickdeals_rss
+
+    fresh_date = email.utils.format_datetime(datetime.now(timezone.utc))
+    rss_xml = f"""<?xml version="1.0" encoding="utf-8"?>
+    <rss version="2.0"><channel>
+      <item>
+        <title>Expired /e/ Deal $99</title>
+        <link>https://slickdeals.net/e/11111-expired</link>
+        <guid>11111</guid>
+        <pubDate>{fresh_date}</pubDate>
+      </item>
+      <item>
+        <title>Old 2024 Deal $129</title>
+        <link>https://slickdeals.net/f/22222-old-deal</link>
+        <guid>22222</guid>
+        <pubDate>Fri, 02 Aug 2024 21:46:44 +0000</pubDate>
+      </item>
+      <item>
+        <title>Fresh Live Deal $189 + Free Shipping</title>
+        <link>https://slickdeals.net/f/33333-fresh-deal</link>
+        <guid>33333</guid>
+        <pubDate>{fresh_date}</pubDate>
+      </item>
+    </channel></rss>"""
+    parsed = parse_slickdeals_rss(rss_xml)
+    assert len(parsed) == 1
+    assert parsed[0].url == "https://slickdeals.net/f/33333-fresh-deal"
+    assert parsed[0].price_usd == 189.0
+
+    assert is_slickdeals_thread_expired('<div class="dealAlert">This deal has expired.</div>')
+    assert not is_slickdeals_thread_expired('<div class="dealAlert">Frontpage Deal Active</div>')
+
+    oos_jsonld = """<script type="application/ld+json">
+    {"@type": "Product", "name": "M18 Hedge Trimmer",
+     "offers": {"@type": "Offer", "price": "129.00", "availability": "https://schema.org/OutOfStock"}}
+    </script>"""
+    assert extract_product_metadata(oos_jsonld) is None
