@@ -176,3 +176,37 @@ async def test_scheduler_dedup_across_runs(tmp_path, monkeypatch):
     with get_session() as session:
         gap = session.query(ProviderGap).filter_by(domain="cjponyparts.com").one()
         assert gap.occurrences == 2
+
+
+def test_reddit_classifieds_parser_and_gap_autoresolve(tmp_path):
+    from argos.providers.reddit_classifieds import parse_reddit_search_json
+
+    payload = {
+        "data": {
+            "children": [
+                {
+                    "data": {
+                        "id": "abc1",
+                        "title": "[WTS] MSD 8582 Distributor Ford 302 $240 shipped",
+                        "selftext": "Barely used.",
+                        "permalink": "/r/Mustang/comments/abc1/msd_8582/",
+                        "subreddit_name_prefixed": "r/Mustang",
+                    }
+                },
+                {
+                    "data": {
+                        "id": "abc2",
+                        "title": "[WTB] MSD 8582 Distributor $200",
+                        "selftext": "",
+                        "permalink": "/r/Mustang/comments/abc2/wtb/",
+                        "subreddit_name_prefixed": "r/Mustang",
+                    }
+                },
+            ]
+        }
+    }
+    parsed = parse_reddit_search_json(payload)
+    assert len(parsed) == 1
+    assert parsed[0].external_id == "abc1"
+    assert parsed[0].price_usd == 240.0
+    assert parsed[0].location_text == "r/Mustang"

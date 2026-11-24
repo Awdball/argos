@@ -92,7 +92,7 @@ async def _exa_mcp_search(query: str, max_results: int) -> List[dict[str, str]]:
 
 async def fetch_urls_exa(urls: List[str]) -> Dict[str, dict[str, str]]:
     """Batch-fetch indexed page contents via Exa MCP web_fetch_exa (zero-cost)."""
-    clean_urls = [u for u in urls if u and u.startswith("http")][:8]
+    clean_urls = [u for u in urls if u and u.startswith("http")][:12]
     if not clean_urls:
         return {}
     try:

@@ -223,17 +223,10 @@ class UniversalRetailProvider(BaseProvider):
 
         candidate_urls: List[dict] = []
         seen_urls: set[str] = set()
+        seen_domains: set[str] = set()
         calls = 0
 
-        for q in queries:
-            calls += 1
-            if trusted_map:
-                domains_slice = list(trusted_map.keys())[:4]
-                site_filter = " OR ".join(f"site:{d}" for d in domains_slice)
-                search_q = f"{q} ({site_filter})"
-            else:
-                search_q = f"{q} buy price"
-            hits = await search_web(search_q, settings, max_results=6)
+        def _collect_hits(hits: List[dict[str, str]]) -> None:
             for h in hits:
                 url = h["url"]
                 if url.lower().endswith(".pdf"):
@@ -243,7 +236,27 @@ class UniversalRetailProvider(BaseProvider):
                     continue
                 if url not in seen_urls:
                     seen_urls.add(url)
+                    seen_domains.add(dom)
                     candidate_urls.append({**h, "domain": dom})
+
+        for q in queries:
+            calls += 1
+            if trusted_map:
+                domains_slice = list(trusted_map.keys())[:4]
+                site_filter = " OR ".join(f"site:{d}" for d in domains_slice)
+                search_q = f"{q} ({site_filter})"
+            else:
+                search_q = f"{q} buy price"
+            _collect_hits(await search_web(search_q, settings, max_results=6))
+
+        # Per-domain targeted fallback for trusted retailers crowded out by OR queries.
+        if trusted_map and queries:
+            missing_domains = [d for d in trusted_map if d not in seen_domains]
+            for dom in missing_domains[:5]:
+                calls += 1
+                _collect_hits(
+                    await search_web(f"site:{dom} {queries[0]}", settings, max_results=2)
+                )
 
         listings_by_url: Dict[str, RawListing] = {}
         needs_exa_fetch: List[dict] = []
@@ -254,7 +267,7 @@ class UniversalRetailProvider(BaseProvider):
             follow_redirects=True,
             headers={"User-Agent": _USER_AGENT, "Accept-Language": "en-US,en;q=0.9"},
         ) as client:
-            for idx, cand in enumerate(candidate_urls[:8]):
+            for idx, cand in enumerate(candidate_urls[:12]):
                 if idx > 0:
                     await asyncio.sleep(0.25)
                 url = cand["url"]

@@ -163,3 +163,22 @@ def test_api_health_dashboard_and_images(tmp_path, monkeypatch):
         assert "Holley Mid-Mount SBF 302" in dash.text
         assert client.get("/static/app.css").status_code == 200
         assert client.get("/static/app.js").status_code == 200
+
+        # Test POST /api/ingest matching & deduplication
+        ingest_body = {
+            "title": "Holley Mid-Mount 20-370 Ford 302 Complete",
+            "price_usd": 1450.0,
+            "url": "https://www.facebook.com/marketplace/item/999000111/",
+            "source": "facebook_saved_search",
+            "location_text": "Frisco, TX",
+            "distance_miles": 15.0,
+        }
+        ing1 = client.post("/api/ingest", json=ingest_body)
+        assert ing1.status_code == 200
+        assert ing1.json()["matched_watches"] == 1
+        assert ing1.json()["alerts_sent"] == 1
+
+        # Re-ingesting same item at same price emits 0 new alerts
+        ing2 = client.post("/api/ingest", json=ingest_body)
+        assert ing2.status_code == 200
+        assert ing2.json()["alerts_sent"] == 0

@@ -1,9 +1,11 @@
 """Background scan scheduler, deduplication persistence, and feedback transitions."""
 
 import asyncio
+import hashlib
 import logging
 from datetime import datetime, timedelta
 from typing import Awaitable, Callable, Dict, List, Optional
+from urllib.parse import urlparse
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -15,13 +17,14 @@ from argos.models import (
     ApiUsageLog,
     FeedbackEvent,
     Listing,
+    ProviderGap,
     ProviderRunState,
     WatchItem,
     utcnow,
 )
-from argos.providers.base import BaseProvider
+from argos.providers.base import BaseProvider, RawListing
 from argos.providers.registry import get_provider, load_all_providers
-from argos.scoring import evaluate_listing, should_notify, vet_deal_with_ai
+from argos.scoring import EvaluationResult, evaluate_listing, should_notify, vet_deal_with_ai
 
 logger = logging.getLogger(__name__)
 
@@ -277,6 +280,19 @@ async def run_provider_for_item(
             if notify:
                 pending_alerts.append((target_listing.id, notify_reason))
 
+            # Auto-resolve any open ProviderGap if this URL yielded a real price.
+            if price_val > 0 and raw.url:
+                dom = urlparse(raw.url).netloc.lower().lstrip("www.")
+                if dom:
+                    gap = session.scalar(
+                        select(ProviderGap).where(
+                            ProviderGap.domain == dom, ProviderGap.status == "open"
+                        )
+                    )
+                    if gap:
+                        gap.status = "resolved"
+                        gap.last_seen_at = now
+
         run_state = session.scalar(
             select(ProviderRunState).where(
                 ProviderRunState.watch_item_id == item.id,
@@ -356,6 +372,138 @@ async def run_item_scan_now(
         "items_found": total_found,
         "new_alerts": total_alerts,
         "errors": errors,
+    }
+
+
+async def ingest_external_listing(
+    raw: RawListing,
+    settings: Settings,
+    watch_item_id: Optional[int] = None,
+    alert_cb: Optional[AlertCallback] = None,
+) -> dict:
+    """Evaluate and persist an externally pushed listing (FB saved-search email, shortcut, etc.)."""
+    if not raw.external_id:
+        raw.external_id = hashlib.sha1((raw.url or raw.title).encode("utf-8")).hexdigest()[:20]
+
+    with get_session() as session:
+        if watch_item_id is not None:
+            it = session.get(WatchItem, watch_item_id)
+            items = [it] if it else []
+        else:
+            items = session.scalars(select(WatchItem).where(WatchItem.status == "active")).all()
+        snapshots = [
+            WatchItem(
+                id=it.id,
+                name=it.name,
+                raw_request=it.raw_request,
+                category=it.category,
+                search_queries=list(it.search_queries or []),
+                required_tokens=list(it.required_tokens or []),
+                negative_keywords=list(it.negative_keywords or []),
+                bundle_components=list(it.bundle_components or []),
+                retail_baseline_usd=it.retail_baseline_usd,
+                new_deal_target_usd=it.new_deal_target_usd,
+                used_deal_target_usd=it.used_deal_target_usd,
+                radius_miles=it.radius_miles,
+                is_hot=it.is_hot,
+                status=it.status,
+            )
+            for it in items
+        ]
+
+    matched_evals: List[tuple[WatchItem, EvaluationResult]] = []
+    for snap in snapshots:
+        ev = evaluate_listing(raw, snap, settings)
+        if ev.passed:
+            ev = await vet_deal_with_ai(raw, snap, ev, settings)
+            if ev.passed:
+                matched_evals.append((snap, ev))
+
+    now = utcnow()
+    pending_alerts: List[tuple[int, int, str]] = []
+    results: List[dict] = []
+
+    with get_session() as session:
+        for snap, ev in matched_evals:
+            existing = session.scalar(
+                select(Listing).where(
+                    Listing.watch_item_id == snap.id,
+                    Listing.provider == raw.provider,
+                    Listing.external_id == raw.external_id,
+                )
+            )
+            notify, notify_reason = should_notify(
+                existing, ev.landed_cost_usd, ev, settings, now=now
+            )
+            price_val = float(raw.price_usd or 0.0)
+            ship_val = float(raw.shipping_usd or 0.0)
+            if existing:
+                existing.price_usd = price_val
+                existing.shipping_usd = ship_val
+                existing.landed_cost_usd = ev.landed_cost_usd
+                existing.deal_score = ev.deal_score
+                existing.deal_reason = ev.reason
+                existing.last_seen_at = now
+                target_listing = existing
+            else:
+                target_listing = Listing(
+                    watch_item_id=snap.id,
+                    provider=raw.provider,
+                    external_id=raw.external_id,
+                    url=raw.url,
+                    title=raw.title,
+                    description=raw.description[:2000],
+                    price_usd=price_val,
+                    shipping_usd=ship_val,
+                    landed_cost_usd=ev.landed_cost_usd,
+                    condition=raw.condition,
+                    location_text=raw.location_text[:255],
+                    distance_miles=raw.distance_miles,
+                    image_url=raw.image_url,
+                    matched_bundle=ev.matched_bundle,
+                    matched_bundle_names=ev.matched_bundle_names,
+                    deal_score=ev.deal_score,
+                    deal_reason=ev.reason,
+                    state="new",
+                    first_seen_at=now,
+                    last_seen_at=now,
+                )
+                session.add(target_listing)
+                session.flush()
+            if notify:
+                pending_alerts.append((snap.id, target_listing.id, notify_reason))
+            results.append(
+                {
+                    "watch_item_id": snap.id,
+                    "listing_id": target_listing.id,
+                    "deal_score": ev.deal_score,
+                    "will_notify": notify,
+                    "reason": notify_reason,
+                }
+            )
+
+    alerts_sent = 0
+    for wid, lid, reason in pending_alerts:
+        msg_id: Optional[int] = None
+        if alert_cb is not None:
+            try:
+                msg_id = await alert_cb(wid, lid, reason)
+            except Exception as exc:
+                logger.warning("Ingest alert callback failed for listing %s: %s", lid, exc)
+        with get_session() as session:
+            lst = session.get(Listing, lid)
+            if lst:
+                lst.state = "notified"
+                lst.last_notified_price_usd = lst.landed_cost_usd
+                lst.snooze_until = None
+                if msg_id is not None:
+                    lst.telegram_message_id = msg_id
+        alerts_sent += 1
+
+    return {
+        "matched_watches": len(results),
+        "alerts_sent": alerts_sent,
+        "results": results,
     }
 
 

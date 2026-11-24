@@ -28,8 +28,14 @@ from argos.models import (
     WatchItem,
     utcnow,
 )
+from argos.providers.base import RawListing
 from argos.providers.registry import list_providers, load_all_providers
-from argos.scheduler import SchedulerService, apply_listing_feedback, run_item_scan_now
+from argos.scheduler import (
+    SchedulerService,
+    apply_listing_feedback,
+    ingest_external_listing,
+    run_item_scan_now,
+)
 from argos.telegram_bot import ArgosTelegramBot
 
 logger = logging.getLogger(__name__)
@@ -69,6 +75,22 @@ class WatchPatchRequest(BaseModel):
 class FeedbackRequest(BaseModel):
     action: str
     notes: str = ""
+
+
+class IngestRequest(BaseModel):
+    title: str = Field(..., min_length=2)
+    price_usd: float = Field(..., gt=0)
+    shipping_usd: float = 0.0
+    url: str = Field(..., min_length=4)
+    source: str = "facebook_saved_search"
+    condition: str = "used"
+    market_type: str = "secondhand"
+    location_text: str = ""
+    distance_miles: Optional[float] = None
+    description: str = ""
+    image_url: str = ""
+    external_id: str = ""
+    watch_item_id: Optional[int] = None
 
 
 def _serialize_item(item: WatchItem, include_details: bool = False) -> dict:
@@ -370,6 +392,29 @@ def create_app(
             if not res:
                 raise HTTPException(status_code=404, detail="Listing not found")
             return res
+
+    @app.post("/api/ingest")
+    async def ingest_listing(body: IngestRequest) -> dict:
+        raw = RawListing(
+            provider=body.source,
+            external_id=body.external_id,
+            url=body.url,
+            title=body.title,
+            price_usd=body.price_usd,
+            shipping_usd=body.shipping_usd,
+            condition=body.condition,
+            description=body.description,
+            location_text=body.location_text,
+            distance_miles=body.distance_miles,
+            image_url=body.image_url,
+            market_type=body.market_type,
+        )
+        return await ingest_external_listing(
+            raw=raw,
+            settings=cfg,
+            watch_item_id=body.watch_item_id,
+            alert_cb=bot.send_deal_alert if bot.is_enabled else None,
+        )
 
     @app.get("/api/providers")
     def get_providers() -> dict:
