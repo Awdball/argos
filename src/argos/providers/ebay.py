@@ -38,6 +38,16 @@ class EbayProvider(BaseProvider):
     def is_configured(self, settings: Settings) -> bool:
         return bool(settings.ebay_client_id.strip() and settings.ebay_client_secret.strip())
 
+    def _is_sandbox(self, settings: Settings) -> bool:
+        if settings.ebay_sandbox is not None:
+            return bool(settings.ebay_sandbox)
+        cid = settings.ebay_client_id.strip().upper()
+        csec = settings.ebay_client_secret.strip().upper()
+        return "-SBX-" in cid or csec.startswith("SBX-")
+
+    def _base_url(self, settings: Settings) -> str:
+        return "https://api.sandbox.ebay.com" if self._is_sandbox(settings) else "https://api.ebay.com"
+
     async def _get_token(self, client: httpx.AsyncClient, settings: Settings) -> str:
         now = time.time()
         if self._token and now < self._token_expires_at - 60:
@@ -45,7 +55,7 @@ class EbayProvider(BaseProvider):
         creds = f"{settings.ebay_client_id}:{settings.ebay_client_secret}".encode("utf-8")
         auth = base64.b64encode(creds).decode("ascii")
         resp = await client.post(
-            "https://api.ebay.com/identity/v1/oauth2/token",
+            f"{self._base_url(settings)}/identity/v1/oauth2/token",
             headers={
                 "Authorization": f"Basic {auth}",
                 "Content-Type": "application/x-www-form-urlencoded",
@@ -79,7 +89,7 @@ class EbayProvider(BaseProvider):
                 calls += 1
                 try:
                     resp = await client.get(
-                        "https://api.ebay.com/buy/browse/v1/item_summary/search",
+                        f"{self._base_url(settings)}/buy/browse/v1/item_summary/search",
                         headers={
                             "Authorization": f"Bearer {token}",
                             "X-EBAY-C-MARKETPLACE-ID": "EBAY_US",

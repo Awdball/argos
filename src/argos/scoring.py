@@ -234,7 +234,13 @@ def should_notify(
     if existing is None or existing.state in ("new", "ignored"):
         return True, "new_deal"
 
-    if existing.state in ("quiesced_distance", "quiesced_wrong_item", "bought"):
+    if existing.state in (
+        "quiesced_distance",
+        "quiesced_wrong_item",
+        "quiesced_expired",
+        "quiesced_false_positive",
+        "bought",
+    ):
         return False, f"suppressed_{existing.state}"
 
     if existing.state == "quiesced_timing":

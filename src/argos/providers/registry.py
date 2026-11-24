@@ -25,6 +25,7 @@ def load_all_providers() -> None:
         craigslist,
         ebay,
         facebook_apify,
+        facebook_browser,
         reddit_classifieds,
         slickdeals,
         universal_retail,

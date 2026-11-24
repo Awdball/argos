@@ -38,11 +38,16 @@ class Settings(BaseSettings):
 
     ebay_client_id: str = ""
     ebay_client_secret: str = ""
+    ebay_sandbox: Optional[bool] = None
     woot_api_key: str = ""
     apify_token: str = ""
     apify_monthly_budget_usd: float = 4.50
     keepa_api_key: str = ""
     serpapi_key: str = ""
+
+    enable_facebook_browser: bool = True
+    facebook_city_slug: str = "dallas"
+    facebook_storage_state_path: str = ""
 
     port: int = 8080
     enable_telegram: bool = True

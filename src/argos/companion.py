@@ -12,7 +12,7 @@ from argos.models import ApiUsageLog, Listing, ProviderGap, WatchItem, utcnow
 from argos.providers.registry import get_provider, list_providers
 from argos.scheduler import effective_interval_minutes
 
-_SECONDHAND_PROVIDERS = {"craigslist", "ebay", "facebook_apify"}
+_SECONDHAND_PROVIDERS = {"craigslist", "ebay", "facebook_apify", "facebook_browser"}
 _RETAIL_PROVIDERS = {"universal_retail", "woot", "slickdeals"}
 _SUPPRESSED_STATES = {"quiesced_wrong_item", "quiesced_distance", "bought"}
 _HARD_REJECT_PREFIXES = (

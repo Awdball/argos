@@ -72,6 +72,10 @@ def apply_listing_feedback(
         "bad_timing": "quiesced_timing",
         "wrong": "quiesced_wrong_item",
         "wrong_item": "quiesced_wrong_item",
+        "expired": "quiesced_expired",
+        "oos": "quiesced_expired",
+        "false_positive": "quiesced_false_positive",
+        "fp": "quiesced_false_positive",
         "bought": "bought",
     }
     new_state = state_map.get(action_clean)
