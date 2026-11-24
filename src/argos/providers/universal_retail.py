@@ -2,9 +2,11 @@
 
 import asyncio
 import hashlib
+import importlib.util
 import json
 import logging
 import re
+import shutil
 from typing import Any, Dict, List, Optional
 from urllib.parse import urlparse
 
@@ -14,6 +16,7 @@ from bs4 import BeautifulSoup
 from argos.config import Settings
 from argos.models import WatchItem
 from argos.providers.base import BaseProvider, ProviderCapabilities, ProviderResult, RawListing
+from argos.providers.browser_utils import BROWSER_LOCK
 from argos.providers.registry import register_provider
 from argos.providers.web_search import (
     fetch_urls_exa,
@@ -35,6 +38,12 @@ _SKIP_DOMAINS = {
 }
 
 _SKIP_URL_SEGMENTS = ("/tips/", "/buying-guides/", "/how-to/", "/blog/")
+
+_PRODUCT_SITE_HINTS = {
+    "summitracing.com": "summitracing.com/parts",
+    "homedepot.com": "homedepot.com/p",
+    "autozone.com": "autozone.com/p",
+}
 
 _USER_AGENT = (
     "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
@@ -276,8 +285,9 @@ class UniversalRetailProvider(BaseProvider):
             missing_domains = [d for d in trusted_map if d not in seen_domains]
             for dom in missing_domains[:8]:
                 calls += 1
+                site_target = _PRODUCT_SITE_HINTS.get(dom, dom)
                 _collect_hits(
-                    await search_web(f"site:{dom} {queries[0]}", settings, max_results=2)
+                    await search_web(f"site:{site_target} {queries[0]}", settings, max_results=2)
                 )
 
         listings_by_url: Dict[str, RawListing] = {}
@@ -368,6 +378,112 @@ class UniversalRetailProvider(BaseProvider):
                             location_text=retailer_name,
                             market_type="retail",
                         )
+
+        # Step 3b: Headless Chromium fallback for JS-rendered trusted shops (non-WAF-blocked).
+        js_candidates = [
+            c
+            for c in needs_exa_fetch
+            if c["url"] not in listings_by_url
+            and c["domain"] in trusted_map
+            and "403" not in blocked_reasons.get(c["url"], "")
+            and "429" not in blocked_reasons.get(c["url"], "")
+        ][:3]
+        if js_candidates and importlib.util.find_spec("playwright") is not None:
+            try:
+                from playwright.async_api import async_playwright
+
+                async with BROWSER_LOCK, async_playwright() as p:
+                    exe = shutil.which("chromium") or shutil.which("chromium-browser") or None
+                    browser = await p.chromium.launch(
+                        executable_path=exe,
+                        headless=True,
+                        args=["--disable-blink-features=AutomationControlled", "--no-sandbox", "--disable-dev-shm-usage"],
+                    )
+                    try:
+                        ctx = await browser.new_context(
+                            viewport={"width": 1440, "height": 900},
+                            timezone_id="America/Chicago",
+                            locale="en-US",
+                            user_agent=_USER_AGENT,
+                        )
+                        await ctx.add_init_script(
+                            "Object.defineProperty(navigator, 'webdriver', {get: () => undefined});"
+                        )
+                        page = await ctx.new_page()
+                        for cand in js_candidates:
+                            url = cand["url"]
+                            dom = cand["domain"]
+                            retailer_name = (trusted_map.get(dom) or {}).get("name") or dom
+                            try:
+                                resp = await page.goto(url, wait_until="domcontentloaded", timeout=18000)
+                                await asyncio.sleep(2.5)
+                                if resp and resp.status >= 400:
+                                    continue
+                                html_body = await page.content()
+                                meta = extract_product_metadata(html_body)
+                                price = meta["price"] if meta else None
+                                title = (meta.get("title") if meta else "") or await page.title()
+                                if price is None:
+                                    body_txt = await page.evaluate(
+                                        "() => document.body ? document.body.innerText.slice(0, 3000) : ''"
+                                    )
+                                    price = extract_price_from_text(
+                                        body_txt, baseline_usd=watch_item.retail_baseline_usd
+                                    )
+                                if price is not None:
+                                    ext_id = hashlib.sha1(url.encode("utf-8")).hexdigest()[:20]
+                                    listings_by_url[url] = RawListing(
+                                        provider="universal_retail",
+                                        external_id=ext_id,
+                                        url=url,
+                                        title=(title or cand.get("title") or watch_item.name)[:250],
+                                        price_usd=price,
+                                        shipping_usd=0.0,
+                                        condition="new",
+                                        description=cand.get("snippet", "")[:400],
+                                        location_text=retailer_name,
+                                        image_url=meta.get("image_url", "") if meta else "",
+                                        market_type="retail",
+                                    )
+                            except Exception as exc:
+                                logger.debug("UniversalRetail Chromium fallback failed for %s: %s", url, exc)
+                    finally:
+                        await browser.close()
+            except Exception as exc:
+                logger.debug("UniversalRetail Chromium launcher skipped: %s", exc)
+
+        # Step 3c: Price-targeted snippet search (`$`) for remaining unresolved trusted domains.
+        if trusted_map and queries:
+            resolved_domains = {_domain_of(u) for u in listings_by_url}
+            unresolved_trusted = [d for d in trusted_map if d not in resolved_domains]
+            for dom in unresolved_trusted[:4]:
+                calls += 1
+                site_target = _PRODUCT_SITE_HINTS.get(dom, dom)
+                snip_hits = await search_web(f'site:{site_target} {queries[0]} "$"', settings, max_results=2)
+                for h in snip_hits:
+                    h_url = h.get("url") or ""
+                    if not h_url or h_url in listings_by_url:
+                        continue
+                    sp = extract_price_from_text(
+                        f"{h.get('title', '')} {h.get('snippet', '')}",
+                        baseline_usd=watch_item.retail_baseline_usd,
+                    )
+                    if sp is not None:
+                        retailer_name = (trusted_map.get(dom) or {}).get("name") or dom
+                        ext_id = hashlib.sha1(h_url.encode("utf-8")).hexdigest()[:20]
+                        listings_by_url[h_url] = RawListing(
+                            provider="universal_retail",
+                            external_id=ext_id,
+                            url=h_url,
+                            title=h.get("title") or watch_item.name,
+                            price_usd=sp,
+                            shipping_usd=0.0,
+                            condition="new",
+                            description=h.get("snippet", "")[:400],
+                            location_text=retailer_name,
+                            market_type="retail",
+                        )
+                        break
 
         # Step 4: Optional SerpApi Google Shopping results when SERPAPI_KEY is configured.
         if settings.serpapi_key and queries:

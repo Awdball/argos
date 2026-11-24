@@ -23,6 +23,7 @@ def load_all_providers() -> None:
         return
     from argos.providers import (  # noqa: F401
         bestbuy_browser,
+        costco_browser,
         craigslist,
         ebay,
         facebook_browser,

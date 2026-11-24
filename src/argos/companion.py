@@ -13,7 +13,7 @@ from argos.providers.registry import get_provider, list_providers
 from argos.scheduler import effective_interval_minutes
 
 _SECONDHAND_PROVIDERS = {"craigslist", "ebay", "facebook_browser"}
-_RETAIL_PROVIDERS = {"universal_retail", "woot", "slickdeals", "bestbuy_browser"}
+_RETAIL_PROVIDERS = {"universal_retail", "woot", "slickdeals", "bestbuy_browser", "costco_browser"}
 _SUPPRESSED_STATES = {
     "quiesced_wrong_item",
     "quiesced_distance",

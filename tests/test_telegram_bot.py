@@ -190,3 +190,19 @@ def test_deal_keyboard_has_expired_and_false_positive_and_suppresses(tmp_path):
     assert bb_parsed[0].title.startswith("Instant Pot - Pro 8-Quart")
     assert bb_parsed[0].price_usd == 159.99
     assert bb_parsed[0].market_type == "retail"
+
+    # Costco browser card parser
+    from argos.providers.costco_browser import parse_costco_cards
+
+    cc_cards = [
+        {
+            "href": "/instant-pot-pro-8.product.4000123456.html",
+            "text": "Compare\nInstant Pot Rio Wide Plus 7.5-Quart Multi-Cooker\n$119.99\n($119.99 after $20 OFF)\nDelivery available",
+            "image_url": "https://images.costco-static.com/1.jpg",
+        }
+    ]
+    cc_parsed = parse_costco_cards(cc_cards)
+    assert len(cc_parsed) == 1
+    assert cc_parsed[0].external_id == "4000123456"
+    assert cc_parsed[0].price_usd == 119.99
+    assert cc_parsed[0].market_type == "retail"
