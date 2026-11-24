@@ -6,8 +6,10 @@
   <meta name="color-scheme" content="light dark" />
   <script>
     try {
+      const savedTheme = localStorage.getItem("argos-theme") || "cyber";
+      document.documentElement.setAttribute("data-theme", savedTheme);
       document.querySelector('meta[name="color-scheme"]').content =
-        localStorage.getItem("color-scheme") ?? "light dark";
+        savedTheme === "e-ink" ? "light" : "dark";
     } catch {}
   </script>
   <title>Argos — Visual Deal Intelligence</title>
@@ -26,11 +28,18 @@
         </div>
       </div>
       <div class="topbar-actions">
-        <span id="sync-status" class="sync-pill" aria-live="polite">Live</span>
-        <button type="button" id="theme-toggle-btn" class="btn btn-ghost" aria-label="Toggle color theme">
-          <span class="theme-label-dark">Dark UI</span>
-          <span class="theme-label-light">Light UI</span>
+        <button type="button" id="hermes-status-btn" class="hermes-pill" title="View Hermes activity &amp; duration log">
+          <span class="hermes-dot" aria-hidden="true"></span>
+          <span id="hermes-status-label">Hermes: Idle</span>
         </button>
+        <span id="sync-status" class="sync-pill" aria-live="polite">Live</span>
+        <select id="theme-select" class="theme-select" aria-label="Color theme">
+          <option value="cyber">Cyber</option>
+          <option value="gruvbox">Gruvbox</option>
+          <option value="solarized">Solarized</option>
+          <option value="e-ink">E-Ink</option>
+          <option value="e-ink-dark">E-Ink Dark</option>
+        </select>
         <button type="button" id="refresh-btn" class="btn btn-secondary">Refresh</button>
         <button type="button" id="scan-all-btn" class="btn btn-secondary">Scan All Active</button>
         <button type="button" id="open-add-btn" class="btn btn-primary">+ Add Watch Item</button>
@@ -216,6 +225,15 @@
       <button type="button" class="btn btn-ghost btn-icon" data-close-dialog aria-label="Close detail dialog">&times;</button>
     </div>
     <div id="detail-content" class="dialog-body"></div>
+  </dialog>
+
+  <!-- Hermes Activity Log Modal -->
+  <dialog id="hermes-dialog" class="dialog-wide" closedby="any" aria-labelledby="hermes-dialog-title">
+    <div class="dialog-header">
+      <h1 id="hermes-dialog-title">Hermes Agent Activity &amp; Task Log</h1>
+      <button type="button" class="btn btn-ghost btn-icon" data-close-dialog aria-label="Close Hermes log">&times;</button>
+    </div>
+    <div id="hermes-content" class="dialog-body"></div>
   </dialog>
 
   <div id="toast-region" class="toast-region" aria-live="polite"></div>

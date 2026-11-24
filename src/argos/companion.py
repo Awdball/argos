@@ -8,7 +8,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session, selectinload
 
 from argos.config import Settings
-from argos.models import ApiUsageLog, Listing, ProviderGap, WatchItem, utcnow
+from argos.models import ApiUsageLog, HermesActivity, Listing, ProviderGap, WatchItem, utcnow
 from argos.providers.registry import get_provider, list_providers
 from argos.scheduler import effective_interval_minutes
 
@@ -515,4 +515,49 @@ def build_dashboard_payload(session: Session, settings: Settings) -> Dict[str, A
         "all_secondhand_deals": all_secondhand_deals,
         "providers": provider_rows,
         "provider_gaps": gap_rows,
+        "hermes": build_hermes_status_payload(session),
     }
+
+
+def _serialize_hermes_activity(row: HermesActivity, now_dt=None) -> Dict[str, Any]:
+    ref_now = now_dt or utcnow()
+    elapsed = (
+        row.duration_seconds
+        if row.duration_seconds is not None
+        else max(0.0, round((ref_now - row.started_at).total_seconds(), 1))
+    )
+    return {
+        "id": row.id,
+        "operation": row.operation,
+        "status": row.status,
+        "detail": row.detail,
+        "target_domain": row.target_domain,
+        "watch_item_id": row.watch_item_id,
+        "started_at": row.started_at.isoformat() if row.started_at else None,
+        "finished_at": row.finished_at.isoformat() if row.finished_at else None,
+        "duration_seconds": elapsed,
+    }
+
+
+def build_hermes_status_payload(session: Session, limit: int = 25) -> Dict[str, Any]:
+    """Return current Hermes operation state and recent task duration log."""
+    rows = session.scalars(
+        select(HermesActivity)
+        .order_by(HermesActivity.started_at.desc(), HermesActivity.id.desc())
+        .limit(limit)
+    ).all()
+    now_dt = utcnow()
+    history = [_serialize_hermes_activity(r, now_dt=now_dt) for r in rows]
+    running = next((h for h in history if h["status"] == "running"), None)
+    current = running or {
+        "id": None,
+        "operation": "idle",
+        "status": "idle",
+        "detail": "Idle — awaiting next scheduled check or task",
+        "target_domain": "",
+        "watch_item_id": None,
+        "started_at": history[0]["finished_at"] if history else None,
+        "finished_at": None,
+        "duration_seconds": 0.0,
+    }
+    return {"current": current, "history": history}

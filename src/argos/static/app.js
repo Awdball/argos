@@ -86,30 +86,131 @@
     return resp.json();
   }
 
-  /* ---- Theme Override Toggle (dark-mode-toggle) ---- */
+  /* ---- awdash Theme Selector ---- */
   function setupThemeToggle() {
     const meta = document.querySelector('meta[name="color-scheme"]');
-    const btn = document.getElementById("theme-toggle-btn");
-    const sysDark = window.matchMedia("(prefers-color-scheme: dark)");
+    const sel = document.getElementById("theme-select");
+    const applyTheme = (theme) => {
+      const valid = ["cyber", "gruvbox", "solarized", "e-ink", "e-ink-dark"];
+      const next = valid.includes(theme) ? theme : "cyber";
+      document.documentElement.setAttribute("data-theme", next);
+      if (meta) meta.content = next === "e-ink" ? "light" : "dark";
+      if (sel) sel.value = next;
+    };
 
-    function currentEffective() {
-      if (meta.content === "light" || meta.content === "dark") return meta.content;
-      return sysDark.matches ? "dark" : "light";
+    try {
+      applyTheme(localStorage.getItem("argos-theme") || "cyber");
+    } catch {
+      applyTheme("cyber");
     }
 
-    btn.addEventListener("click", () => {
-      const next = currentEffective() === "dark" ? "light" : "dark";
-      const matchesSystem = next === (sysDark.matches ? "dark" : "light");
-      try {
-        if (matchesSystem) localStorage.removeItem("color-scheme");
-        else localStorage.setItem("color-scheme", next);
-      } catch {}
-      meta.content = matchesSystem ? "light dark" : next;
-    });
+    if (sel) {
+      sel.addEventListener("change", () => {
+        try {
+          localStorage.setItem("argos-theme", sel.value);
+        } catch {}
+        applyTheme(sel.value);
+      });
+    }
 
     window.addEventListener("storage", (e) => {
-      if (e.key === "color-scheme") meta.content = e.newValue ?? "light dark";
+      if (e.key === "argos-theme") applyTheme(e.newValue || "cyber");
     });
+  }
+
+  function fmtDuration(sec) {
+    if (sec === null || sec === undefined) return "—";
+    const s = Math.max(0, Math.round(Number(sec)));
+    if (s < 60) return `${s}s`;
+    const m = Math.floor(s / 60);
+    const rem = s % 60;
+    if (m < 60) return `${m}m ${rem}s`;
+    const h = Math.floor(m / 60);
+    return `${h}h ${m % 60}m`;
+  }
+
+  function fmtOperationLabel(op) {
+    const map = {
+      idle: "Idle",
+      searching: "Searching",
+      researching_prices: "Researching Prices",
+      researching_retailers: "Researching Retailers",
+      building_scraper: "Building Scraper",
+      escalating: "Escalating",
+    };
+    const key = String(op || "idle").toLowerCase();
+    return map[key] || key.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
+  }
+
+  function renderHermesStatus(data) {
+    const btn = document.getElementById("hermes-status-btn");
+    const label = document.getElementById("hermes-status-label");
+    if (!btn || !label) return;
+    const cur = data?.hermes?.current || { operation: "idle", status: "idle", duration_seconds: 0 };
+    const isRunning = cur.status === "running";
+    btn.classList.toggle("running", isRunning);
+    const opLabel = fmtOperationLabel(cur.operation);
+    label.textContent = isRunning
+      ? `Hermes: ${opLabel} · ${fmtDuration(cur.duration_seconds)}`
+      : `Hermes: ${opLabel}`;
+  }
+
+  async function openHermesModal() {
+    const dialog = document.getElementById("hermes-dialog");
+    const container = document.getElementById("hermes-content");
+    if (!dialog || !container) return;
+    let payload = state.data?.hermes;
+    try {
+      payload = await apiJson("/api/hermes/status");
+      if (state.data) state.data.hermes = payload;
+      renderHermesStatus({ hermes: payload });
+    } catch {}
+
+    const cur = payload?.current || { operation: "idle", status: "idle", detail: "Idle", duration_seconds: 0 };
+    const history = payload?.history || [];
+
+    const summaryBox = el("div", { class: "mini-box", style: "margin-bottom:12px;" }, [
+      el("div", { class: "mini-box-label", text: "Current Hermes State" }),
+      el("div", {
+        class: `mini-box-val ${cur.status === "running" ? "accent" : ""}`,
+        text: `${fmtOperationLabel(cur.operation)}${cur.status === "running" ? ` (${fmtDuration(cur.duration_seconds)})` : ""}`,
+      }),
+      el("div", { class: "muted", text: cur.detail || "No active task" }),
+    ]);
+
+    const rows = history.length
+      ? history.map((h) =>
+          el("tr", {}, [
+            el("td", {}, [el("span", { class: `pill ${h.status === "running" ? "pill-accent" : h.status === "failed" ? "pill-hot" : "pill-good"}`, text: fmtOperationLabel(h.operation) })]),
+            el("td", { text: h.detail || h.target_domain || "—" }),
+            el("td", { text: h.status }),
+            el("td", { text: fmtDuration(h.duration_seconds) }),
+            el("td", { text: h.started_at ? new Date(h.started_at + "Z").toLocaleString() : "—" }),
+          ])
+        )
+      : [
+          el("tr", {}, [
+            el("td", { colspan: "5", class: "muted", text: "No Hermes operations logged yet. Scheduled checks run daily at 09:00 and every 3 days at 10:00." }),
+          ]),
+        ];
+
+    const table = el("div", { class: "table-wrap" }, [
+      el("table", { class: "data-table" }, [
+        el("thead", {}, [
+          el("tr", {}, [
+            el("th", { text: "Operation" }),
+            el("th", { text: "Task / Target" }),
+            el("th", { text: "Status" }),
+            el("th", { text: "Duration" }),
+            el("th", { text: "Started" }),
+          ]),
+        ]),
+        el("tbody", {}, rows),
+      ]),
+    ]);
+
+    container.replaceChildren(summaryBox, table);
+    dialog.showModal();
   }
 
   /* ---- Accessible Tabs ---- */
@@ -881,6 +982,7 @@
     renderAllDealsTab(data);
     renderGapsTab(data);
     renderProvidersTab(data);
+    renderHermesStatus(data);
   }
 
   async function refreshDashboard() {
@@ -952,6 +1054,8 @@
     }
 
     document.getElementById("refresh-btn").addEventListener("click", refreshDashboard);
+    const hermesBtn = document.getElementById("hermes-status-btn");
+    if (hermesBtn) hermesBtn.addEventListener("click", openHermesModal);
 
     document.getElementById("scan-all-btn").addEventListener("click", async (e) => {
       const btn = e.currentTarget;

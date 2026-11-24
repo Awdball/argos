@@ -214,6 +214,37 @@ def test_api_health_dashboard_and_images(tmp_path, monkeypatch):
         assert dash_after["target_gap"]["new_delta_usd"] == 49.0
         assert dash_after["target_gap"]["historical_vs_target_usd"] == 49.0
 
+        # Test Hermes activity status & duration log
+        st0 = client.get("/api/hermes/status").json()
+        assert st0["current"]["operation"] == "idle"
+        start_act = client.post(
+            "/api/hermes/activity",
+            json={
+                "operation": "building_scraper",
+                "status": "running",
+                "detail": "Building stealth scraper for acehardware.com",
+                "target_domain": "acehardware.com",
+                "watch_item_id": item_id,
+            },
+        )
+        assert start_act.status_code == 200
+        act_id = start_act.json()["activity_id"]
+        assert start_act.json()["current"]["operation"] == "building_scraper"
+        assert start_act.json()["current"]["status"] == "running"
+
+        done_act = client.post(
+            "/api/hermes/activity",
+            json={
+                "operation": "building_scraper",
+                "status": "completed",
+                "activity_id": act_id,
+                "duration_seconds": 18.4,
+            },
+        )
+        assert done_act.status_code == 200
+        assert done_act.json()["current"]["operation"] == "idle"
+        assert done_act.json()["history"][0]["duration_seconds"] == 18.4
+
 
 def test_ace_hardware_default_target_and_editorial_skip():
     from argos.inductor import _merge_default_retailers

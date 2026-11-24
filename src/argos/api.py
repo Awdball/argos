@@ -14,13 +14,14 @@ from pydantic import BaseModel, Field
 from sqlalchemy import func, select
 
 from argos import __version__
-from argos.companion import build_dashboard_payload
+from argos.companion import build_dashboard_payload, build_hermes_status_payload
 from argos.config import Settings, get_settings
 from argos.db import check_db_health, get_session, init_db
 from argos.image_fetcher import fallback_svg_for_category, fetch_product_image
 from argos.inductor import induct_item
 from argos.models import (
     ApiUsageLog,
+    HermesActivity,
     Listing,
     PriceBenchmark,
     ProviderGap,
@@ -80,6 +81,16 @@ class BenchmarkRequest(BaseModel):
     market_type: str = "new"
     url: str = ""
     title: str = ""
+
+
+class HermesActivityRequest(BaseModel):
+    operation: str = Field(..., min_length=1)
+    status: str = "running"
+    detail: str = ""
+    target_domain: str = ""
+    watch_item_id: Optional[int] = None
+    activity_id: Optional[int] = None
+    duration_seconds: Optional[float] = None
 
 
 class FeedbackRequest(BaseModel):
@@ -488,6 +499,88 @@ def create_app(
                 }
                 for g in gaps
             ]
+
+    @app.get("/api/hermes/status")
+    def get_hermes_status() -> dict:
+        with get_session() as session:
+            return build_hermes_status_payload(session)
+
+    @app.post("/api/hermes/activity")
+    def post_hermes_activity(body: HermesActivityRequest) -> dict:
+        now_dt = utcnow()
+        op = body.operation.strip().lower().replace(" ", "_")[:64]
+        st = body.status.strip().lower()[:32]
+        with get_session() as session:
+            if body.activity_id is not None and st in ("completed", "failed", "idle"):
+                row = session.get(HermesActivity, body.activity_id)
+                if row:
+                    row.status = "completed" if st == "idle" else st
+                    row.finished_at = now_dt
+                    if body.detail:
+                        row.detail = body.detail[:1000]
+                    row.duration_seconds = (
+                        round(body.duration_seconds, 1)
+                        if body.duration_seconds is not None
+                        else max(0.0, round((now_dt - row.started_at).total_seconds(), 1))
+                    )
+                    session.flush()
+                return build_hermes_status_payload(session)
+
+            if st in ("idle", "completed", "failed"):
+                open_rows = session.scalars(
+                    select(HermesActivity).where(HermesActivity.status == "running")
+                ).all()
+                matched_open = None
+                for r in open_rows:
+                    if st != "idle" and r.operation == op and matched_open is None:
+                        matched_open = r
+                    r.status = "completed" if st == "idle" else st
+                    r.finished_at = now_dt
+                    r.duration_seconds = (
+                        round(body.duration_seconds, 1)
+                        if (body.duration_seconds is not None and r is matched_open)
+                        else max(0.0, round((now_dt - r.started_at).total_seconds(), 1))
+                    )
+                    if r is matched_open and body.detail:
+                        r.detail = body.detail[:1000]
+                if st in ("completed", "failed") and matched_open is None:
+                    session.add(
+                        HermesActivity(
+                            operation=op,
+                            status=st,
+                            detail=body.detail[:1000],
+                            target_domain=body.target_domain[:160],
+                            watch_item_id=body.watch_item_id,
+                            started_at=now_dt,
+                            finished_at=now_dt,
+                            duration_seconds=round(body.duration_seconds or 0.0, 1),
+                        )
+                    )
+                session.flush()
+                return build_hermes_status_payload(session)
+
+            # New running operation: close any stale running rows cleanly first
+            for stale in session.scalars(
+                select(HermesActivity).where(HermesActivity.status == "running")
+            ).all():
+                stale.status = "completed"
+                stale.finished_at = now_dt
+                stale.duration_seconds = max(
+                    0.0, round((now_dt - stale.started_at).total_seconds(), 1)
+                )
+            act = HermesActivity(
+                operation=op,
+                status="running",
+                detail=body.detail[:1000],
+                target_domain=body.target_domain[:160],
+                watch_item_id=body.watch_item_id,
+                started_at=now_dt,
+            )
+            session.add(act)
+            session.flush()
+            payload = build_hermes_status_payload(session)
+            payload["activity_id"] = act.id
+            return payload
 
     @app.get("/api/stats")
     def get_stats() -> dict:

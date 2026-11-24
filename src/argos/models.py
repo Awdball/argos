@@ -220,3 +220,19 @@ class ApiUsageLog(Base):
     updated_at: Mapped[datetime] = mapped_column(
         DateTime, default=utcnow, onupdate=utcnow, nullable=False
     )
+
+
+class HermesActivity(Base):
+    """Tracks live and historical Hermes agent operations for Argos."""
+
+    __tablename__ = "hermes_activities"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    operation: Mapped[str] = mapped_column(String(64), default="idle", nullable=False)
+    status: Mapped[str] = mapped_column(String(32), default="running", nullable=False)
+    detail: Mapped[str] = mapped_column(Text, default="", nullable=False)
+    target_domain: Mapped[str] = mapped_column(String(160), default="", nullable=False)
+    watch_item_id: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    started_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, nullable=False)
+    finished_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    duration_seconds: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
