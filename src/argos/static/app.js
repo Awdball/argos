@@ -352,6 +352,14 @@
         },
       });
 
+      const newDelta = item.target_gap?.new_delta_usd;
+      const deltaText =
+        newDelta === null || newDelta === undefined
+          ? null
+          : newDelta <= 0
+          ? `${fmtUsd(Math.abs(newDelta))} under target`
+          : `+${fmtUsd(newDelta)} above target`;
+
       const retailBox = item.best_retail
         ? el("div", { class: "mini-box" }, [
             el("div", { class: "mini-box-label", text: item.best_retail.is_live ? "Best Live Retail" : "Retail Ref" }),
@@ -365,6 +373,13 @@
               rel: "noopener",
               text: item.best_retail.name,
             }),
+            deltaText
+              ? el("div", {
+                  class: newDelta <= 0 ? "good" : "muted",
+                  style: "font-size:11px;margin-top:2px;",
+                  text: deltaText,
+                })
+              : null,
           ])
         : el("div", { class: "mini-box" }, [
             el("div", { class: "mini-box-label", text: "Best Retail" }),
@@ -673,6 +688,18 @@
         buildPriceLadder(item),
         item.induction_summary ? el("p", { style: "margin:0;", text: item.induction_summary }) : null,
         item.deal_likelihood ? el("div", { class: "muted", text: `Market Odds: ${item.deal_likelihood}` }) : null,
+        item.historical_best_retail
+          ? el("div", {
+              class: "muted",
+              text: `Historical Retail Best: ${fmtUsd(item.historical_best_retail.price_usd)} at ${item.historical_best_retail.name || item.historical_best_retail.domain}${
+                item.target_gap?.historical_vs_target_usd != null
+                  ? item.target_gap.historical_vs_target_usd <= 0
+                    ? ` (${fmtUsd(Math.abs(item.target_gap.historical_vs_target_usd))} under target)`
+                    : ` (+${fmtUsd(item.target_gap.historical_vs_target_usd)} vs target)`
+                  : ""
+              }`,
+            })
+          : null,
         item.bundle_components?.length
           ? el("div", {
               class: "good",

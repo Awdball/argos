@@ -197,6 +197,23 @@ def test_api_health_dashboard_and_images(tmp_path, monkeypatch):
         domains = {r["domain"] for r in patched.json()["trusted_retailers"]}
         assert "acehardware.com" in domains
 
+        # Test POST /api/items/{id}/benchmarks + historical_best_retail + target_gap
+        bm = client.post(
+            f"/api/items/{item_id}/benchmarks",
+            json={
+                "source": "acehardware.com",
+                "price_usd": 2199.0,
+                "market_type": "new",
+                "url": "https://www.acehardware.com/product/holley",
+                "title": "Historical Sale",
+            },
+        )
+        assert bm.status_code == 200
+        dash_after = client.get("/api/dashboard").json()["items"][0]
+        assert dash_after["historical_best_retail"]["price_usd"] == 2199.0
+        assert dash_after["target_gap"]["new_delta_usd"] == 49.0
+        assert dash_after["target_gap"]["historical_vs_target_usd"] == 49.0
+
 
 def test_ace_hardware_default_target_and_editorial_skip():
     from argos.inductor import _merge_default_retailers

@@ -70,7 +70,16 @@ class WatchPatchRequest(BaseModel):
     required_tokens: Optional[List[Any]] = None
     negative_keywords: Optional[List[str]] = None
     trusted_retailers: Optional[List[Dict[str, Any]]] = None
+    deal_likelihood: Optional[str] = None
     active_providers: Optional[List[str]] = None
+
+
+class BenchmarkRequest(BaseModel):
+    source: str = Field(..., min_length=1)
+    price_usd: float = Field(..., gt=0)
+    market_type: str = "new"
+    url: str = ""
+    title: str = ""
 
 
 class FeedbackRequest(BaseModel):
@@ -345,6 +354,32 @@ def create_app(
             item.updated_at = utcnow()
             session.flush()
             return _serialize_item(item, include_details=True)
+
+    @app.post("/api/items/{item_id}/benchmarks")
+    def add_item_benchmark(item_id: int, body: BenchmarkRequest) -> dict:
+        with get_session() as session:
+            item = session.get(WatchItem, item_id)
+            if not item:
+                raise HTTPException(status_code=404, detail="Watch item not found")
+            bench = PriceBenchmark(
+                watch_item_id=item.id,
+                source=body.source[:120],
+                market_type=body.market_type[:20],
+                price_usd=round(float(body.price_usd), 2),
+                url=body.url[:1000],
+                title=body.title[:250],
+            )
+            session.add(bench)
+            item.updated_at = utcnow()
+            session.flush()
+            return {
+                "id": bench.id,
+                "watch_item_id": item.id,
+                "source": bench.source,
+                "market_type": bench.market_type,
+                "price_usd": bench.price_usd,
+                "url": bench.url,
+            }
 
     @app.delete("/api/items/{item_id}")
     def delete_item(item_id: int) -> dict:

@@ -14,7 +14,13 @@ from argos.scheduler import effective_interval_minutes
 
 _SECONDHAND_PROVIDERS = {"craigslist", "ebay", "facebook_apify", "facebook_browser"}
 _RETAIL_PROVIDERS = {"universal_retail", "woot", "slickdeals"}
-_SUPPRESSED_STATES = {"quiesced_wrong_item", "quiesced_distance", "bought"}
+_SUPPRESSED_STATES = {
+    "quiesced_wrong_item",
+    "quiesced_distance",
+    "quiesced_expired",
+    "quiesced_false_positive",
+    "bought",
+}
 _HARD_REJECT_PREFIXES = (
     "missing_price",
     "placeholder_or_scam_price",
@@ -211,6 +217,41 @@ def build_item_companion_view(
     live_retail = [r for r in priced_retail if r["is_live"]]
     best_retail = live_retail[0] if live_retail else (priced_retail[0] if priced_retail else None)
 
+    # Historical retail best price across valid new benchmarks + non-suppressed retail listings
+    historical_candidates: List[Dict[str, Any]] = []
+    for b in item.benchmarks:
+        if b.market_type != "new" or not _is_valid_benchmark_price(b.price_usd, item.retail_baseline_usd):
+            continue
+        dom = _domain_of(b.url) or b.source.lower().lstrip("www.")
+        historical_candidates.append(
+            {
+                "price_usd": b.price_usd,
+                "domain": dom,
+                "name": b.source or dom,
+                "url": b.url,
+                "title": b.title,
+                "observed_at": b.observed_at.isoformat() if b.observed_at else None,
+                "is_live": False,
+            }
+        )
+    for r in priced_retail:
+        historical_candidates.append(
+            {
+                "price_usd": r["price_usd"],
+                "domain": r["domain"],
+                "name": r["name"],
+                "url": r["url"],
+                "title": r["title"],
+                "observed_at": None,
+                "is_live": r["is_live"],
+            }
+        )
+    historical_best_retail = (
+        min(historical_candidates, key=lambda c: c["price_usd"])
+        if historical_candidates
+        else None
+    )
+
     # 2. Viable 2nd-hand deals
     viable_secondhand: List[Dict[str, Any]] = []
     for lst in item.listings:
@@ -302,6 +343,43 @@ def build_item_companion_view(
             }
         )
 
+    new_best_price = best_retail["price_usd"] if best_retail else None
+    used_best_price = best_secondhand["landed_cost_usd"] if best_secondhand else None
+    hist_best_price = historical_best_retail["price_usd"] if historical_best_retail else None
+
+    new_delta = (
+        round(new_best_price - item.new_deal_target_usd, 2)
+        if (new_best_price is not None and item.new_deal_target_usd is not None)
+        else None
+    )
+    used_delta = (
+        round(used_best_price - item.used_deal_target_usd, 2)
+        if (used_best_price is not None and item.used_deal_target_usd is not None)
+        else None
+    )
+    hist_vs_target = (
+        round(hist_best_price - item.new_deal_target_usd, 2)
+        if (hist_best_price is not None and item.new_deal_target_usd is not None)
+        else None
+    )
+    target_gap = {
+        "new_delta_usd": new_delta,
+        "new_pct_above_target": (
+            round((new_delta / item.new_deal_target_usd) * 100.0, 1)
+            if (new_delta is not None and item.new_deal_target_usd and item.new_deal_target_usd > 0)
+            else None
+        ),
+        "new_meets_target": bool(new_delta is not None and new_delta <= 0),
+        "used_delta_usd": used_delta,
+        "used_pct_above_target": (
+            round((used_delta / item.used_deal_target_usd) * 100.0, 1)
+            if (used_delta is not None and item.used_deal_target_usd and item.used_deal_target_usd > 0)
+            else None
+        ),
+        "used_meets_target": bool(used_delta is not None and used_delta <= 0),
+        "historical_vs_target_usd": hist_vs_target,
+    }
+
     return {
         "id": item.id,
         "name": item.name,
@@ -325,6 +403,8 @@ def build_item_companion_view(
         "has_image": has_image,
         "image_endpoint": image_endpoint,
         "best_retail": best_retail,
+        "historical_best_retail": historical_best_retail,
+        "target_gap": target_gap,
         "best_secondhand": best_secondhand,
         "viable_secondhand_deals": viable_secondhand,
         "retailer_matrix": retailer_matrix,
