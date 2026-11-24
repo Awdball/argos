@@ -12,7 +12,7 @@ from argos.models import ApiUsageLog, HermesActivity, Listing, ProviderGap, Watc
 from argos.providers.registry import get_provider, list_providers
 from argos.scheduler import effective_interval_minutes
 
-_SECONDHAND_PROVIDERS = {"craigslist", "ebay", "facebook_apify", "facebook_browser"}
+_SECONDHAND_PROVIDERS = {"craigslist", "ebay", "facebook_browser"}
 _RETAIL_PROVIDERS = {"universal_retail", "woot", "slickdeals", "bestbuy_browser"}
 _SUPPRESSED_STATES = {
     "quiesced_wrong_item",
@@ -441,7 +441,6 @@ def build_dashboard_payload(session: Session, settings: Settings) -> Dict[str, A
         select(ApiUsageLog).where(ApiUsageLog.period_month == month)
     ).all()
     usage_map = {u.provider: u for u in usages}
-    apify_usage = usage_map.get("facebook_apify")
 
     enriched_items = [build_item_companion_view(it, gap_map, settings) for it in items]
 
@@ -509,8 +508,6 @@ def build_dashboard_payload(session: Session, settings: Settings) -> Dict[str, A
             "open_gaps_count": sum(1 for g in gap_rows if g["status"] == "open"),
             "providers_configured": sum(1 for p in provs if p["configured"]),
             "providers_total": len(provs),
-            "apify_spent_usd": apify_usage.estimated_cost_usd if apify_usage else 0.0,
-            "apify_budget_usd": settings.apify_monthly_budget_usd,
         },
         "items": enriched_items,
         "all_secondhand_deals": all_secondhand_deals,

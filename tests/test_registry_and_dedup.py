@@ -21,13 +21,13 @@ from argos.scoring import should_notify, EvaluationResult
 def test_registry_and_zero_cost_config_status():
     s = Settings(database_url="sqlite:///:memory:", enable_telegram=False)
     provs = {p["name"]: p for p in list_providers(s)}
-    assert {"craigslist", "ebay", "woot", "slickdeals", "universal_retail", "facebook_apify"}.issubset(
+    assert {"craigslist", "ebay", "woot", "slickdeals", "universal_retail", "facebook_browser", "bestbuy_browser"}.issubset(
         provs.keys()
     )
     assert provs["craigslist"]["configured"] is True
     assert provs["universal_retail"]["configured"] is True
     assert provs["ebay"]["configured"] is False
-    assert provs["facebook_apify"]["configured"] is False
+    assert "facebook_apify" not in provs
 
     cl = get_provider("craigslist")
     ur = get_provider("universal_retail")

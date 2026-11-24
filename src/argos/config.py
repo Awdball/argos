@@ -40,8 +40,6 @@ class Settings(BaseSettings):
     ebay_client_secret: str = ""
     ebay_sandbox: Optional[bool] = None
     woot_api_key: str = ""
-    apify_token: str = ""
-    apify_monthly_budget_usd: float = 4.50
     keepa_api_key: str = ""
     serpapi_key: str = ""
 

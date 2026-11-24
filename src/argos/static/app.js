@@ -358,7 +358,8 @@
     document.getElementById("kpi-best-discount").textContent =
       s.best_discount_pct !== null ? `Best discount ${s.best_discount_pct}%` : "Scanning retailers";
     document.getElementById("kpi-providers").textContent = `${s.providers_configured} / ${s.providers_total}`;
-    document.getElementById("kpi-budget").textContent = `Apify $${s.apify_spent_usd.toFixed(2)} / $${s.apify_budget_usd.toFixed(2)}`;
+    const budgetEl = document.getElementById("kpi-budget");
+    if (budgetEl) budgetEl.textContent = "Zero-cost browser & API providers";
     document.getElementById("kpi-gaps").textContent = s.open_gaps_count;
     document.getElementById("tab-deals-count").textContent = s.viable_secondhand_count;
     document.getElementById("tab-gaps-count").textContent = s.open_gaps_count;
@@ -679,15 +680,12 @@
 
   function renderProvidersTab(data) {
     const budgetPanel = document.getElementById("budget-panel");
-    const spent = Number(data.summary.apify_spent_usd || 0);
-    const cap = Math.max(0.01, Number(data.summary.apify_budget_usd || 4.5));
-    const fillPct = Math.min(100, (spent / cap) * 100).toFixed(1);
     budgetPanel.replaceChildren(
       el("div", { style: "display:flex;justify-content:space-between;gap:8px;flex-wrap:wrap;" }, [
-        el("strong", { text: "Apify Monthly Spend Guardrail (Facebook Marketplace)" }),
-        el("span", { text: `$${spent.toFixed(2)} / $${cap.toFixed(2)} (${fillPct}%)` }),
+        el("strong", { text: "Zero-Cost Human-Paced Browser & Free API Mode" }),
+        el("span", { class: "good", text: "$0.00 / month" }),
       ]),
-      el("div", { class: "meter" }, [el("div", { class: "meter-fill", style: `width:${fillPct}%` })])
+      el("div", { class: "muted", style: "font-size:0.84rem;margin-top:4px;", text: "Facebook Marketplace and Best Buy run via serialized Playwright Chromium sessions; Craigslist, Slickdeals, Woot, Reddit, and Universal Retail run zero-cost." })
     );
 
     const tbody = document.getElementById("providers-tbody");

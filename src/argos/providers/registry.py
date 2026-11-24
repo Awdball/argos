@@ -25,7 +25,6 @@ def load_all_providers() -> None:
         bestbuy_browser,
         craigslist,
         ebay,
-        facebook_apify,
         facebook_browser,
         reddit_classifieds,
         slickdeals,

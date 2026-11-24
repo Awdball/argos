@@ -117,16 +117,6 @@ def _can_afford_provider(session: Session, provider: BaseProvider, settings: Set
     cost = provider.capabilities.estimated_cost_per_call_usd
     if cost <= 0:
         return True
-    month = _current_month()
-    usage = session.scalar(
-        select(ApiUsageLog).where(
-            ApiUsageLog.provider == provider.capabilities.name,
-            ApiUsageLog.period_month == month,
-        )
-    )
-    spent = usage.estimated_cost_usd if usage else 0.0
-    if provider.capabilities.name == "facebook_apify":
-        return (spent + cost) <= settings.apify_monthly_budget_usd
     return True
 
 
