@@ -247,6 +247,13 @@ a:hover { text-decoration: underline; }
   transition: border-color 0.15s ease, transform 0.1s ease;
 }
 .kpi-link:hover { border-color: var(--accent); transform: translateY(-1px); }
+
+.gaps-resolved-wrap {
+  margin-top: 22px;
+  opacity: 0.65;
+  transition: opacity 0.15s ease;
+}
+.gaps-resolved-wrap:hover { opacity: 0.92; }
 .kpi-label { font-size: 0.72rem; color: var(--muted); font-weight: 600; text-transform: uppercase; letter-spacing: 0.03em; }
 .kpi-value { font-size: 1.35rem; font-weight: 800; margin: 1px 0; }
 .kpi-sub { font-size: 0.75rem; color: var(--muted); }

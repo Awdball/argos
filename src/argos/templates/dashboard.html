@@ -138,8 +138,8 @@
       <section role="tabpanel" id="panel-gaps" aria-labelledby="tab-gaps" hidden>
         <div class="panel-inner">
           <div class="section-head">
-            <h2 id="gaps-table-caption">Niche &amp; Blocked Retailers (Provider Gaps)</h2>
-            <p class="muted">Sites recommended by forum/Reddit research or returning anti-bot blocks during scans, ready for custom scraper plugins.</p>
+            <h2 id="gaps-table-caption">Open Scraper Gaps (Actionable)</h2>
+            <p class="muted">Sites that still lack reliable price visibility and need a custom scraper or Hermes investigation.</p>
           </div>
           <div tabindex="0" role="region" aria-labelledby="gaps-table-caption" class="table-wrapper">
             <table class="data-table gaps-table">
@@ -156,6 +156,29 @@
               </thead>
               <tbody id="gaps-tbody"></tbody>
             </table>
+          </div>
+
+          <div id="resolved-gaps-section" class="gaps-resolved-wrap" hidden>
+            <div class="section-head">
+              <h2 id="resolved-gaps-caption">Resolved &amp; WAF-Covered Retailers</h2>
+              <p class="muted">Previously flagged retailers that now resolve via dedicated scrapers, search snippets, or known WAF policy.</p>
+            </div>
+            <div tabindex="0" role="region" aria-labelledby="resolved-gaps-caption" class="table-wrapper">
+              <table class="data-table gaps-table">
+                <thead>
+                  <tr>
+                    <th>Retailer</th>
+                    <th>Domain</th>
+                    <th>Source</th>
+                    <th>Reason</th>
+                    <th>Sample Item</th>
+                    <th>Hits</th>
+                    <th>Status</th>
+                  </tr>
+                </thead>
+                <tbody id="resolved-gaps-tbody"></tbody>
+              </table>
+            </div>
           </div>
         </div>
       </section>

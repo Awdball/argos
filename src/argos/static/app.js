@@ -658,13 +658,13 @@
 
   function renderGapsTab(data) {
     const tbody = document.getElementById("gaps-tbody");
-    if (!data.provider_gaps.length) {
-      tbody.replaceChildren(
-        el("tr", {}, [el("td", { colspan: 7, class: "muted", text: "No open scraper gaps logged." })])
-      );
-      return;
-    }
-    const rows = data.provider_gaps.map((g) =>
+    const resolvedSection = document.getElementById("resolved-gaps-section");
+    const resolvedTbody = document.getElementById("resolved-gaps-tbody");
+    const allGaps = data.provider_gaps || [];
+    const openGaps = allGaps.filter((g) => g.status === "open");
+    const doneGaps = allGaps.filter((g) => g.status !== "open");
+
+    const buildRow = (g, pillClass) =>
       el("tr", {}, [
         el("th", { scope: "row", text: g.retailer_name }),
         el("td", { dataset: { label: "Domain" } }, [el("code", { text: g.domain })]),
@@ -672,10 +672,36 @@
         el("td", { dataset: { label: "Reason" }, text: g.reason }),
         el("td", { dataset: { label: "Sample Item" }, text: g.sample_item }),
         el("td", { dataset: { label: "Hits" }, text: g.occurrences }),
-        el("td", { dataset: { label: "Status" } }, [el("span", { class: "pill pill-warn", text: g.status })]),
-      ])
-    );
-    tbody.replaceChildren(...rows);
+        el("td", { dataset: { label: "Status" } }, [el("span", { class: `pill ${pillClass}`, text: g.status })]),
+      ]);
+
+    if (!openGaps.length) {
+      tbody.replaceChildren(
+        el("tr", {}, [
+          el("td", {
+            colspan: 7,
+            class: "muted",
+            text: "No open scraper gaps — all tracked retailers are covered.",
+          }),
+        ])
+      );
+    } else {
+      tbody.replaceChildren(...openGaps.map((g) => buildRow(g, "pill-warn")));
+    }
+
+    if (resolvedSection && resolvedTbody) {
+      if (!doneGaps.length) {
+        resolvedSection.hidden = true;
+        resolvedTbody.replaceChildren();
+      } else {
+        resolvedSection.hidden = false;
+        resolvedTbody.replaceChildren(
+          ...doneGaps.map((g) =>
+            buildRow(g, g.status === "resolved" ? "pill-good" : "pill-accent")
+          )
+        );
+      }
+    }
   }
 
   function renderProvidersTab(data) {
