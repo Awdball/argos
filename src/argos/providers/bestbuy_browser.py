@@ -13,7 +13,12 @@ from urllib.parse import quote_plus
 from argos.config import Settings
 from argos.models import WatchItem
 from argos.providers.base import BaseProvider, ProviderCapabilities, ProviderResult, RawListing
-from argos.providers.browser_utils import BROWSER_LOCK
+from argos.providers.browser_utils import (
+    BROWSER_LOCK,
+    get_async_playwright,
+    is_browser_available,
+    launch_stealth_chromium,
+)
 from argos.providers.registry import register_provider
 
 logger = logging.getLogger(__name__)
@@ -118,33 +123,21 @@ class BestBuyBrowserProvider(BaseProvider):
     )
 
     def is_configured(self, settings: Settings) -> bool:
-        return bool(
-            settings.enable_bestbuy_browser
-            and importlib.util.find_spec("playwright") is not None
-        )
+        return bool(settings.enable_bestbuy_browser and is_browser_available())
 
     async def search(self, watch_item: WatchItem, settings: Settings) -> ProviderResult:
         if not self.is_configured(settings):
             return ProviderResult(listings=[], api_calls=0)
 
-        from playwright.async_api import async_playwright
+        async_pw, using_patchright = get_async_playwright()
 
         queries = (watch_item.search_queries or [watch_item.name])[:2]
         seen: Dict[str, RawListing] = {}
         calls = 0
         blocked_err: Optional[str] = None
 
-        async with BROWSER_LOCK, async_playwright() as p:
-            exe_path = shutil.which("chromium") or shutil.which("chromium-browser") or None
-            browser = await p.chromium.launch(
-                executable_path=exe_path,
-                headless=True,
-                args=[
-                    "--disable-blink-features=AutomationControlled",
-                    "--no-sandbox",
-                    "--disable-dev-shm-usage",
-                ],
-            )
+        async with BROWSER_LOCK, async_pw() as p:
+            browser = await launch_stealth_chromium(p)
             try:
                 context = await browser.new_context(
                     viewport={"width": 1440, "height": 900},
@@ -156,7 +149,8 @@ class BestBuyBrowserProvider(BaseProvider):
                         "Chrome/131.0.0.0 Safari/537.36"
                     ),
                 )
-                await context.add_init_script(_STEALTH_INIT_JS)
+                if not using_patchright:
+                    await context.add_init_script(_STEALTH_INIT_JS)
                 page = await context.new_page()
 
                 for idx, q in enumerate(queries):

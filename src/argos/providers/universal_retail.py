@@ -16,7 +16,13 @@ from bs4 import BeautifulSoup
 from argos.config import Settings
 from argos.models import WatchItem
 from argos.providers.base import BaseProvider, ProviderCapabilities, ProviderResult, RawListing
-from argos.providers.browser_utils import BROWSER_LOCK
+from argos.providers.browser_utils import (
+    BROWSER_LOCK,
+    fetch_html_curl_cffi,
+    get_async_playwright,
+    is_browser_available,
+    launch_stealth_chromium,
+)
 from argos.providers.registry import register_provider
 from argos.providers.web_search import (
     fetch_urls_exa,
@@ -327,6 +333,26 @@ class UniversalRetailProvider(BaseProvider):
                             continue
                     elif resp.status_code in (403, 429, 503):
                         blocked_reasons[url] = f"HTTP {resp.status_code} anti-bot / access blocked"
+                        cffi_res = await fetch_html_curl_cffi(url)
+                        if cffi_res and cffi_res[0] == 200:
+                            meta = extract_product_metadata(cffi_res[1])
+                            if meta:
+                                ext_id = hashlib.sha1(url.encode("utf-8")).hexdigest()[:20]
+                                listings_by_url[url] = RawListing(
+                                    provider="universal_retail",
+                                    external_id=ext_id,
+                                    url=url,
+                                    title=meta.get("title") or cand.get("title") or watch_item.name,
+                                    price_usd=meta["price"],
+                                    shipping_usd=0.0,
+                                    condition=meta.get("condition", "new"),
+                                    description=cand.get("snippet", "")[:400],
+                                    location_text=retailer_name,
+                                    image_url=meta.get("image_url", ""),
+                                    market_type="retail",
+                                )
+                                blocked_reasons.pop(url, None)
+                                continue
                 except Exception as exc:
                     blocked_reasons[url] = f"Fetch error: {str(exc)[:100]}"
 
@@ -388,17 +414,12 @@ class UniversalRetailProvider(BaseProvider):
             and "403" not in blocked_reasons.get(c["url"], "")
             and "429" not in blocked_reasons.get(c["url"], "")
         ][:3]
-        if js_candidates and importlib.util.find_spec("playwright") is not None:
+        if js_candidates and is_browser_available():
             try:
-                from playwright.async_api import async_playwright
+                async_pw, using_patchright = get_async_playwright()
 
-                async with BROWSER_LOCK, async_playwright() as p:
-                    exe = shutil.which("chromium") or shutil.which("chromium-browser") or None
-                    browser = await p.chromium.launch(
-                        executable_path=exe,
-                        headless=True,
-                        args=["--disable-blink-features=AutomationControlled", "--no-sandbox", "--disable-dev-shm-usage"],
-                    )
+                async with BROWSER_LOCK, async_pw() as p:
+                    browser = await launch_stealth_chromium(p)
                     try:
                         ctx = await browser.new_context(
                             viewport={"width": 1440, "height": 900},
@@ -406,9 +427,10 @@ class UniversalRetailProvider(BaseProvider):
                             locale="en-US",
                             user_agent=_USER_AGENT,
                         )
-                        await ctx.add_init_script(
-                            "Object.defineProperty(navigator, 'webdriver', {get: () => undefined});"
-                        )
+                        if not using_patchright:
+                            await ctx.add_init_script(
+                                "Object.defineProperty(navigator, 'webdriver', {get: () => undefined});"
+                            )
                         page = await ctx.new_page()
                         for cand in js_candidates:
                             url = cand["url"]
