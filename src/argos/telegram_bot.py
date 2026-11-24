@@ -1,5 +1,6 @@
 """Interactive Telegram bot (@awdargos_bot) for induction approval, commands, and deal quiesce."""
 
+import asyncio
 import html
 import logging
 from typing import Optional
@@ -7,7 +8,7 @@ from typing import Optional
 from sqlalchemy import select
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.constants import ParseMode
-from telegram.error import Forbidden, TelegramError
+from telegram.error import Forbidden, NetworkError, TelegramError, TimedOut
 from telegram.ext import (
     Application,
     CallbackQueryHandler,
@@ -185,7 +186,14 @@ class ArgosTelegramBot:
         if not self.is_enabled:
             logger.info("Telegram bot disabled or missing token/chat_id.")
             return
-        self.app = Application.builder().token(self.settings.telegram_bot_token.strip()).build()
+        self.app = (
+            Application.builder()
+            .token(self.settings.telegram_bot_token.strip())
+            .connect_timeout(15.0)
+            .read_timeout(20.0)
+            .concurrent_updates(True)
+            .build()
+        )
         self.app.add_handler(CommandHandler("start", self.cmd_start))
         self.app.add_handler(CommandHandler("help", self.cmd_start))
         self.app.add_handler(CommandHandler("add", self.cmd_add))
@@ -200,6 +208,7 @@ class ArgosTelegramBot:
         self.app.add_handler(CommandHandler("providers", self.cmd_providers))
         self.app.add_handler(CommandHandler("status", self.cmd_providers))
         self.app.add_handler(CallbackQueryHandler(self.handle_callback))
+        self.app.add_error_handler(self._on_error)
 
         await self.app.initialize()
         await self.app.start()
@@ -218,30 +227,77 @@ class ArgosTelegramBot:
         except Exception as exc:
             logger.warning("Error stopping Telegram bot: %s", exc)
 
+    async def _on_error(self, update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
+        logger.error("Unhandled Telegram bot error: %s", context.error, exc_info=context.error)
+        if isinstance(update, Update) and update.effective_message is not None:
+            if not isinstance(context.error, (NetworkError, TimedOut)):
+                await self._reply_safe(
+                    update.effective_message,
+                    "⚠️ Argos hit an internal error handling that command. Check logs for details.",
+                    parse_mode=None,
+                )
+
+    async def _reply_safe(
+        self,
+        message,
+        text: str,
+        parse_mode: Optional[str] = ParseMode.HTML,
+        reply_markup: Optional[InlineKeyboardMarkup] = None,
+        disable_web_page_preview: bool = False,
+        attempts: int = 3,
+    ) -> Optional[int]:
+        """Send a reply with retry on transient network/timeout errors."""
+        for attempt in range(1, max(1, attempts) + 1):
+            try:
+                kwargs = {"reply_markup": reply_markup, "disable_web_page_preview": disable_web_page_preview}
+                if parse_mode is not None:
+                    kwargs["parse_mode"] = parse_mode
+                msg = await message.reply_text(text, **kwargs)
+                return getattr(msg, "message_id", None)
+            except (NetworkError, TimedOut) as exc:
+                logger.warning(
+                    "Telegram reply attempt %d/%d failed (%s)", attempt, attempts, exc
+                )
+                if attempt < attempts:
+                    await asyncio.sleep(1.5)
+            except TelegramError as exc:
+                logger.warning("Telegram reply failed: %s", exc)
+                return None
+        return None
+
     async def _send_safe(
         self,
         text: str,
         reply_markup: Optional[InlineKeyboardMarkup] = None,
+        attempts: int = 3,
     ) -> Optional[int]:
         if not self.is_enabled or self.app is None or self.settings.telegram_chat_id is None:
             return None
-        try:
-            msg = await self.app.bot.send_message(
-                chat_id=self.settings.telegram_chat_id,
-                text=text,
-                parse_mode=ParseMode.HTML,
-                reply_markup=reply_markup,
-                disable_web_page_preview=True,
-            )
-            return msg.message_id
-        except Forbidden:
-            logger.warning(
-                "Telegram 403 Forbidden: user must open https://t.me/awdargos_bot and send /start."
-            )
-            return None
-        except TelegramError as exc:
-            logger.warning("Telegram send failed: %s", exc)
-            return None
+        for attempt in range(1, max(1, attempts) + 1):
+            try:
+                msg = await self.app.bot.send_message(
+                    chat_id=self.settings.telegram_chat_id,
+                    text=text,
+                    parse_mode=ParseMode.HTML,
+                    reply_markup=reply_markup,
+                    disable_web_page_preview=True,
+                )
+                return msg.message_id
+            except Forbidden:
+                logger.warning(
+                    "Telegram 403 Forbidden: user must open https://t.me/awdargos_bot and send /start."
+                )
+                return None
+            except (NetworkError, TimedOut) as exc:
+                logger.warning(
+                    "Telegram send attempt %d/%d failed (%s)", attempt, attempts, exc
+                )
+                if attempt < attempts:
+                    await asyncio.sleep(1.5)
+            except TelegramError as exc:
+                logger.warning("Telegram send failed: %s", exc)
+                return None
+        return None
 
     async def send_induction_card(self, item: WatchItem) -> Optional[int]:
         return await self._send_safe(
@@ -297,20 +353,35 @@ class ArgosTelegramBot:
             is_hot = True
             raw = raw[4:].strip()
 
-        await update.message.reply_text(
+        # Best-effort ack: never abort induction if Telegram has a transient hiccup.
+        await self._reply_safe(
+            update.message,
             f"🔍 Inducting & researching <b>{html.escape(raw)}</b>...",
             parse_mode=ParseMode.HTML,
         )
-        item_id = await induct_item(
-            raw, self.settings, is_hot=is_hot, auto_activate=False
-        )
+        try:
+            item_id = await induct_item(
+                raw, self.settings, is_hot=is_hot, auto_activate=False
+            )
+        except Exception as exc:
+            logger.exception("Induction failed for %r", raw)
+            await self._reply_safe(
+                update.message,
+                f"⚠️ Induction failed for <b>{html.escape(raw)}</b>: {html.escape(str(exc))}",
+                parse_mode=ParseMode.HTML,
+            )
+            return
         with get_session() as session:
             item = session.get(WatchItem, item_id)
             assert item is not None
             card = format_induction_card(item, self.settings)
             kb = induction_keyboard(item)
-        await update.message.reply_text(
-            card, parse_mode=ParseMode.HTML, reply_markup=kb, disable_web_page_preview=True
+        await self._reply_safe(
+            update.message,
+            card,
+            parse_mode=ParseMode.HTML,
+            reply_markup=kb,
+            disable_web_page_preview=True,
         )
 
     async def cmd_list(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -409,11 +480,15 @@ class ArgosTelegramBot:
             await update.message.reply_text("Usage: <code>/check &lt;id&gt;</code>", parse_mode=ParseMode.HTML)
             return
         item_id = int(context.args[0])
-        await update.message.reply_text(f"🔎 Scanning all configured providers for Watch #{item_id}...")
+        await self._reply_safe(
+            update.message,
+            f"🔎 Scanning all configured providers for Watch #{item_id}...",
+            parse_mode=None,
+        )
         try:
             res = await run_item_scan_now(item_id, self.settings, alert_cb=self.send_deal_alert)
         except ValueError as exc:
-            await update.message.reply_text(str(exc))
+            await self._reply_safe(update.message, str(exc), parse_mode=None)
             return
         summary = (
             f"Scan complete for Watch #{item_id}: "
@@ -422,7 +497,7 @@ class ArgosTelegramBot:
         )
         if res["errors"]:
             summary += "\nErrors: " + html.escape("; ".join(res["errors"]))
-        await update.message.reply_text(summary, parse_mode=ParseMode.HTML)
+        await self._reply_safe(update.message, summary, parse_mode=ParseMode.HTML)
 
     async def cmd_gaps(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         if not self._authorized(update) or not update.message:
