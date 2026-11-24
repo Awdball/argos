@@ -1,0 +1,392 @@
+"""FastAPI REST API and dashboard routes for Argos."""
+
+import logging
+from contextlib import asynccontextmanager
+from pathlib import Path
+from typing import Any, Dict, List, Optional
+
+from fastapi import FastAPI, HTTPException, Query, Request
+from fastapi.responses import HTMLResponse
+from fastapi.templating import Jinja2Templates
+from pydantic import BaseModel, Field
+from sqlalchemy import func, select
+
+from argos import __version__
+from argos.config import Settings, get_settings
+from argos.db import check_db_health, get_session, init_db
+from argos.inductor import induct_item
+from argos.models import (
+    ApiUsageLog,
+    Listing,
+    PriceBenchmark,
+    ProviderGap,
+    ProviderRunState,
+    WatchItem,
+    utcnow,
+)
+from argos.providers.registry import list_providers, load_all_providers
+from argos.scheduler import SchedulerService, apply_listing_feedback, run_item_scan_now
+from argos.telegram_bot import ArgosTelegramBot
+
+logger = logging.getLogger(__name__)
+
+_TEMPLATES_DIR = Path(__file__).resolve().parent / "templates"
+
+
+class InductRequest(BaseModel):
+    raw_request: str = Field(..., min_length=2)
+    is_hot: bool = False
+    auto_activate: bool = False
+    notify_telegram: bool = True
+    override_payload: Optional[Dict[str, Any]] = None
+
+
+class WatchPatchRequest(BaseModel):
+    name: Optional[str] = None
+    is_hot: Optional[bool] = None
+    status: Optional[str] = None
+    radius_miles: Optional[int] = None
+    retail_baseline_usd: Optional[float] = None
+    new_deal_target_usd: Optional[float] = None
+    used_deal_target_usd: Optional[float] = None
+    search_queries: Optional[List[str]] = None
+    required_tokens: Optional[List[Any]] = None
+    negative_keywords: Optional[List[str]] = None
+    active_providers: Optional[List[str]] = None
+
+
+class FeedbackRequest(BaseModel):
+    action: str
+    notes: str = ""
+
+
+def _serialize_item(item: WatchItem, include_details: bool = False) -> dict:
+    data = {
+        "id": item.id,
+        "name": item.name,
+        "raw_request": item.raw_request,
+        "category": item.category,
+        "search_queries": item.search_queries,
+        "required_tokens": item.required_tokens,
+        "negative_keywords": item.negative_keywords,
+        "bundle_components": item.bundle_components,
+        "retail_baseline_usd": item.retail_baseline_usd,
+        "new_deal_target_usd": item.new_deal_target_usd,
+        "used_deal_target_usd": item.used_deal_target_usd,
+        "deal_likelihood": item.deal_likelihood,
+        "trusted_retailers": item.trusted_retailers,
+        "active_providers": item.active_providers,
+        "radius_miles": item.radius_miles,
+        "is_hot": item.is_hot,
+        "status": item.status,
+        "induction_summary": item.induction_summary,
+        "created_at": item.created_at.isoformat() if item.created_at else None,
+        "updated_at": item.updated_at.isoformat() if item.updated_at else None,
+    }
+    if include_details:
+        data["benchmarks"] = [
+            {
+                "id": b.id,
+                "source": b.source,
+                "market_type": b.market_type,
+                "price_usd": b.price_usd,
+                "url": b.url,
+                "title": b.title,
+            }
+            for b in item.benchmarks
+        ]
+        data["run_states"] = [
+            {
+                "provider": rs.provider,
+                "last_run_at": rs.last_run_at.isoformat() if rs.last_run_at else None,
+                "last_status": rs.last_status,
+                "last_error": rs.last_error,
+                "items_found": rs.items_found,
+                "new_alerts": rs.new_alerts,
+            }
+            for rs in item.run_states
+        ]
+    return data
+
+
+def _serialize_listing(l: Listing) -> dict:
+    return {
+        "id": l.id,
+        "watch_item_id": l.watch_item_id,
+        "provider": l.provider,
+        "external_id": l.external_id,
+        "url": l.url,
+        "title": l.title,
+        "price_usd": l.price_usd,
+        "shipping_usd": l.shipping_usd,
+        "landed_cost_usd": l.landed_cost_usd,
+        "condition": l.condition,
+        "location_text": l.location_text,
+        "distance_miles": l.distance_miles,
+        "matched_bundle": l.matched_bundle,
+        "matched_bundle_names": l.matched_bundle_names,
+        "deal_score": l.deal_score,
+        "deal_reason": l.deal_reason,
+        "state": l.state,
+        "last_notified_price_usd": l.last_notified_price_usd,
+        "first_seen_at": l.first_seen_at.isoformat() if l.first_seen_at else None,
+        "last_seen_at": l.last_seen_at.isoformat() if l.last_seen_at else None,
+    }
+
+
+def create_app(
+    settings: Optional[Settings] = None,
+    enable_background: bool = True,
+) -> FastAPI:
+    """Create and configure the Argos FastAPI application."""
+    cfg = settings or get_settings()
+    bot = ArgosTelegramBot(cfg)
+    scheduler = SchedulerService(
+        cfg, alert_cb=bot.send_deal_alert if bot.is_enabled else None
+    )
+    templates = Jinja2Templates(directory=str(_TEMPLATES_DIR))
+
+    @asynccontextmanager
+    async def lifespan(app: FastAPI):
+        load_all_providers()
+        init_db(cfg.database_url)
+        if enable_background:
+            if bot.is_enabled:
+                await bot.start()
+            if cfg.enable_scheduler:
+                scheduler.start()
+        try:
+            yield
+        finally:
+            if enable_background:
+                await scheduler.stop()
+                await bot.stop()
+
+    app = FastAPI(title="Argos Deal Intelligence", version=__version__, lifespan=lifespan)
+    app.state.settings = cfg
+    app.state.bot = bot
+    app.state.scheduler = scheduler
+
+    @app.get("/api/health")
+    def health() -> dict:
+        try:
+            check_db_health()
+        except Exception as exc:
+            raise HTTPException(status_code=503, detail=f"DB unhealthy: {exc}") from exc
+        provs = list_providers(cfg)
+        configured_count = sum(1 for p in provs if p["configured"])
+        with get_session() as session:
+            active_watches = session.scalar(
+                select(func.count(WatchItem.id)).where(WatchItem.status == "active")
+            ) or 0
+        return {
+            "status": "ok",
+            "version": __version__,
+            "providers_configured": configured_count,
+            "active_watches": int(active_watches),
+        }
+
+    @app.get("/", response_class=HTMLResponse)
+    def dashboard(request: Request):
+        provs = list_providers(cfg)
+        with get_session() as session:
+            items = session.scalars(select(WatchItem).order_by(WatchItem.id.desc())).all()
+            listings = session.scalars(
+                select(Listing).order_by(Listing.last_seen_at.desc()).limit(40)
+            ).all()
+            gaps = session.scalars(
+                select(ProviderGap).order_by(ProviderGap.occurrences.desc()).limit(25)
+            ).all()
+            usages = session.scalars(select(ApiUsageLog)).all()
+            serialized_items = [_serialize_item(it, include_details=True) for it in items]
+            serialized_listings = [_serialize_listing(l) for l in listings]
+            serialized_gaps = [
+                {
+                    "id": g.id,
+                    "domain": g.domain,
+                    "retailer_name": g.retailer_name,
+                    "recommended_by": g.recommended_by,
+                    "reason": g.reason,
+                    "sample_item": g.sample_item,
+                    "status": g.status,
+                    "occurrences": g.occurrences,
+                }
+                for g in gaps
+            ]
+            usage_rows = [
+                {
+                    "provider": u.provider,
+                    "period_month": u.period_month,
+                    "calls_count": u.calls_count,
+                    "estimated_cost_usd": u.estimated_cost_usd,
+                }
+                for u in usages
+            ]
+        return templates.TemplateResponse(
+            request=request,
+            name="dashboard.html",
+            context={
+                "version": __version__,
+                "home_postal": cfg.home_postal,
+                "items": serialized_items,
+                "listings": serialized_listings,
+                "providers": provs,
+                "gaps": serialized_gaps,
+                "usages": usage_rows,
+            },
+        )
+
+    @app.get("/api/items")
+    def get_items() -> List[dict]:
+        with get_session() as session:
+            items = session.scalars(select(WatchItem).order_by(WatchItem.id.asc())).all()
+            return [_serialize_item(it, include_details=True) for it in items]
+
+    @app.post("/api/items/induct")
+    async def api_induct_item(req: InductRequest) -> dict:
+        item_id = await induct_item(
+            raw_request=req.raw_request,
+            settings=cfg,
+            is_hot=req.is_hot,
+            auto_activate=req.auto_activate,
+            override_payload=req.override_payload,
+        )
+        with get_session() as session:
+            item = session.get(WatchItem, item_id)
+            assert item is not None
+            payload = _serialize_item(item, include_details=True)
+            card_item = item if (req.notify_telegram and bot.is_enabled) else None
+        if card_item is not None:
+            await bot.send_induction_card(card_item)
+        return payload
+
+    @app.patch("/api/items/{item_id}")
+    def patch_item(item_id: int, body: WatchPatchRequest) -> dict:
+        with get_session() as session:
+            item = session.get(WatchItem, item_id)
+            if not item:
+                raise HTTPException(status_code=404, detail="Watch item not found")
+            updates = body.model_dump(exclude_unset=True)
+            for field, val in updates.items():
+                setattr(item, field, val)
+            item.updated_at = utcnow()
+            session.flush()
+            return _serialize_item(item, include_details=True)
+
+    @app.delete("/api/items/{item_id}")
+    def delete_item(item_id: int) -> dict:
+        with get_session() as session:
+            item = session.get(WatchItem, item_id)
+            if not item:
+                raise HTTPException(status_code=404, detail="Watch item not found")
+            session.delete(item)
+            return {"deleted": item_id}
+
+    @app.post("/api/items/{item_id}/check")
+    async def check_item(item_id: int) -> dict:
+        try:
+            return await run_item_scan_now(
+                item_id,
+                settings=cfg,
+                alert_cb=bot.send_deal_alert if bot.is_enabled else None,
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+    @app.get("/api/listings")
+    def get_listings(
+        watch_item_id: Optional[int] = Query(default=None),
+        state: Optional[str] = Query(default=None),
+        limit: int = Query(default=100, ge=1, le=500),
+    ) -> List[dict]:
+        with get_session() as session:
+            stmt = select(Listing).order_by(Listing.last_seen_at.desc()).limit(limit)
+            if watch_item_id is not None:
+                stmt = stmt.where(Listing.watch_item_id == watch_item_id)
+            if state:
+                stmt = stmt.where(Listing.state == state)
+            rows = session.scalars(stmt).all()
+            return [_serialize_listing(r) for r in rows]
+
+    @app.post("/api/listings/{listing_id}/feedback")
+    def post_feedback(listing_id: int, body: FeedbackRequest) -> dict:
+        with get_session() as session:
+            try:
+                res = apply_listing_feedback(
+                    session, listing_id, body.action, cfg, notes=body.notes
+                )
+            except ValueError as exc:
+                raise HTTPException(status_code=400, detail=str(exc)) from exc
+            if not res:
+                raise HTTPException(status_code=404, detail="Listing not found")
+            return res
+
+    @app.get("/api/providers")
+    def get_providers() -> dict:
+        with get_session() as session:
+            usages = session.scalars(select(ApiUsageLog)).all()
+            usage_rows = [
+                {
+                    "provider": u.provider,
+                    "period_month": u.period_month,
+                    "calls_count": u.calls_count,
+                    "estimated_cost_usd": u.estimated_cost_usd,
+                }
+                for u in usages
+            ]
+        return {"providers": list_providers(cfg), "usage": usage_rows}
+
+    @app.get("/api/provider-gaps")
+    def get_provider_gaps() -> List[dict]:
+        with get_session() as session:
+            gaps = session.scalars(
+                select(ProviderGap).order_by(ProviderGap.occurrences.desc())
+            ).all()
+            return [
+                {
+                    "id": g.id,
+                    "domain": g.domain,
+                    "retailer_name": g.retailer_name,
+                    "recommended_by": g.recommended_by,
+                    "reason": g.reason,
+                    "sample_item": g.sample_item,
+                    "status": g.status,
+                    "occurrences": g.occurrences,
+                    "first_seen_at": g.first_seen_at.isoformat() if g.first_seen_at else None,
+                    "last_seen_at": g.last_seen_at.isoformat() if g.last_seen_at else None,
+                }
+                for g in gaps
+            ]
+
+    @app.get("/api/stats")
+    def get_stats() -> dict:
+        with get_session() as session:
+            watches_total = session.scalar(select(func.count(WatchItem.id))) or 0
+            watches_active = (
+                session.scalar(
+                    select(func.count(WatchItem.id)).where(WatchItem.status == "active")
+                )
+                or 0
+            )
+            listings_total = session.scalar(select(func.count(Listing.id))) or 0
+            alerts_sent = (
+                session.scalar(
+                    select(func.count(Listing.id)).where(Listing.state == "notified")
+                )
+                or 0
+            )
+            gaps_open = (
+                session.scalar(
+                    select(func.count(ProviderGap.id)).where(ProviderGap.status == "open")
+                )
+                or 0
+            )
+        return {
+            "watches_total": int(watches_total),
+            "watches_active": int(watches_active),
+            "listings_total": int(listings_total),
+            "alerts_sent": int(alerts_sent),
+            "open_provider_gaps": int(gaps_open),
+        }
+
+    return app

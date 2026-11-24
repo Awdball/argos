@@ -1,0 +1,218 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Argos — Universal Deal Intelligence</title>
+  <style>
+    :root {
+      --bg: #0f172a;
+      --card: #1e293b;
+      --border: #334155;
+      --text: #e2e8f0;
+      --muted: #94a3b8;
+      --accent: #38bdf8;
+      --good: #34d399;
+      --warn: #fbbf24;
+      --hot: #fb7185;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      padding: 24px;
+      font-family: system-ui, -apple-system, sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      line-height: 1.5;
+    }
+    .container { max-width: 1200px; margin: 0 auto; }
+    header {
+      display: flex;
+      justify-content: space-between;
+      align-items: baseline;
+      border-bottom: 1px solid var(--border);
+      padding-bottom: 12px;
+      margin-bottom: 24px;
+    }
+    h1 { margin: 0; font-size: 1.6rem; color: var(--accent); }
+    h2 { font-size: 1.15rem; margin: 24px 0 12px; color: var(--text); }
+    .meta { color: var(--muted); font-size: 0.9rem; }
+    .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 12px; margin-bottom: 20px; }
+    .card {
+      background: var(--card);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 14px 16px;
+    }
+    .stat-num { font-size: 1.5rem; font-weight: 700; color: var(--accent); }
+    table { width: 100%; border-collapse: collapse; background: var(--card); border: 1px solid var(--border); border-radius: 10px; overflow: hidden; }
+    th, td { text-align: left; padding: 10px 12px; border-bottom: 1px solid var(--border); font-size: 0.9rem; vertical-align: top; }
+    th { color: var(--muted); font-weight: 600; background: #162032; }
+    a { color: var(--accent); text-decoration: none; }
+    a:hover { text-decoration: underline; }
+    .badge { display: inline-block; padding: 2px 8px; border-radius: 999px; font-size: 0.78rem; font-weight: 600; border: 1px solid var(--border); }
+    .badge.active { color: var(--good); border-color: var(--good); }
+    .badge.hot { color: var(--hot); border-color: var(--hot); }
+    .badge.muted { color: var(--muted); }
+    .badge.warn { color: var(--warn); border-color: var(--warn); }
+    code { background: #0b1220; padding: 1px 5px; border-radius: 4px; font-size: 0.85em; }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <header>
+      <div>
+        <h1>Argos Deal Intelligence</h1>
+        <div class="meta">Home Postal: <code>{{ home_postal }}</code> &middot; v{{ version }}</div>
+      </div>
+      <div class="meta">Telegram Bot: <code>@awdargos_bot</code></div>
+    </header>
+
+    <div class="grid">
+      <div class="card">
+        <div class="meta">Watched Items</div>
+        <div class="stat-num">{{ items|length }}</div>
+      </div>
+      <div class="card">
+        <div class="meta">Tracked Listings</div>
+        <div class="stat-num">{{ listings|length }}</div>
+      </div>
+      <div class="card">
+        <div class="meta">Configured Providers</div>
+        <div class="stat-num">{{ providers|selectattr("configured")|list|length }} / {{ providers|length }}</div>
+      </div>
+      <div class="card">
+        <div class="meta">Open Provider Gaps</div>
+        <div class="stat-num">{{ gaps|selectattr("status", "equalto", "open")|list|length }}</div>
+      </div>
+    </div>
+
+    <h2>Watched Items</h2>
+    <table>
+      <thead>
+        <tr>
+          <th>ID</th>
+          <th>Item</th>
+          <th>Status</th>
+          <th>Retail Base</th>
+          <th>New Target</th>
+          <th>Used Target</th>
+          <th>Radius</th>
+          <th>Exclusions</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for item in items %}
+        <tr>
+          <td>#{{ item.id }}</td>
+          <td>
+            <strong>{{ item.name }}</strong>
+            {% if item.is_hot %}<span class="badge hot">HOT</span>{% endif %}
+            <div class="meta">{{ item.category }} &middot; queries: {{ item.search_queries|join(", ") }}</div>
+          </td>
+          <td><span class="badge {% if item.status == 'active' %}active{% else %}muted{% endif %}">{{ item.status }}</span></td>
+          <td>${{ "%.0f"|format(item.retail_baseline_usd) if item.retail_baseline_usd else "—" }}</td>
+          <td>${{ "%.0f"|format(item.new_deal_target_usd) if item.new_deal_target_usd else "—" }}</td>
+          <td>${{ "%.0f"|format(item.used_deal_target_usd) if item.used_deal_target_usd else "—" }}</td>
+          <td>{{ item.radius_miles }} mi</td>
+          <td class="meta">{{ item.negative_keywords|join(", ") }}</td>
+        </tr>
+        {% else %}
+        <tr><td colspan="8" class="meta">No watched items yet.</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+
+    <h2>Recent Listings</h2>
+    <table>
+      <thead>
+        <tr>
+          <th>Watch</th>
+          <th>Provider</th>
+          <th>Listing</th>
+          <th>Landed</th>
+          <th>Distance</th>
+          <th>Score</th>
+          <th>State</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for l in listings %}
+        <tr>
+          <td>#{{ l.watch_item_id }}</td>
+          <td><code>{{ l.provider }}</code></td>
+          <td>
+            <a href="{{ l.url }}" target="_blank" rel="noopener">{{ l.title }}</a>
+            <div class="meta">{{ l.deal_reason }}</div>
+          </td>
+          <td>${{ "%.2f"|format(l.landed_cost_usd) }}</td>
+          <td>{{ "%.1f mi"|format(l.distance_miles) if l.distance_miles is not none else l.location_text or "—" }}</td>
+          <td>{{ "%.0f"|format(l.deal_score) }}</td>
+          <td><span class="badge">{{ l.state }}</span></td>
+        </tr>
+        {% else %}
+        <tr><td colspan="7" class="meta">No listings evaluated yet.</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+
+    <h2>Providers</h2>
+    <table>
+      <thead>
+        <tr>
+          <th>Provider</th>
+          <th>Market</th>
+          <th>Status</th>
+          <th>Normal / Hot Cadence</th>
+          <th>Cost / Call</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for p in providers %}
+        <tr>
+          <td><strong>{{ p.display_name }}</strong> (<code>{{ p.name }}</code>)</td>
+          <td>{{ p.market_type }}</td>
+          <td>
+            {% if p.configured %}
+              <span class="badge active">configured</span>
+            {% else %}
+              <span class="badge warn">awaiting key</span>
+            {% endif %}
+          </td>
+          <td>{{ p.normal_interval_minutes }}m / {{ p.hot_interval_minutes }}m</td>
+          <td>${{ "%.3f"|format(p.estimated_cost_per_call_usd) }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+
+    <h2>Provider Gaps (Niche / Blocked Retailers)</h2>
+    <table>
+      <thead>
+        <tr>
+          <th>Retailer</th>
+          <th>Domain</th>
+          <th>Reason</th>
+          <th>Sample Item</th>
+          <th>Hits</th>
+          <th>Status</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for g in gaps %}
+        <tr>
+          <td>{{ g.retailer_name }}</td>
+          <td><code>{{ g.domain }}</code></td>
+          <td class="meta">{{ g.reason }}</td>
+          <td class="meta">{{ g.sample_item }}</td>
+          <td>{{ g.occurrences }}</td>
+          <td><span class="badge warn">{{ g.status }}</span></td>
+        </tr>
+        {% else %}
+        <tr><td colspan="6" class="meta">No gaps logged yet.</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</body>
+</html>
