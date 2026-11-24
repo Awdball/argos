@@ -378,12 +378,15 @@
     const st = document.getElementById("filter-status").value;
     const cat = document.getElementById("filter-category").value;
     const hotOnly = document.getElementById("filter-hot").checked;
+    const belowTargetOnly = document.getElementById("filter-below-target")?.checked || false;
     const sortBy = document.getElementById("sort-items").value;
 
     const rows = data.items.filter((it) => {
+      if (it.status === "archived") return false;
       if (st !== "all" && it.status !== st) return false;
       if (cat !== "all" && it.category !== cat) return false;
       if (hotOnly && !it.is_hot) return false;
+      if (belowTargetOnly && !it.best_retail?.meets_target) return false;
       if (q) {
         const hay = [
           it.name,
@@ -751,6 +754,56 @@
       },
     });
 
+    const seenExcluded = (state.excludedImages ||= {});
+    const altPhotoBtn = el("button", {
+      type: "button",
+      class: "btn btn-secondary btn-sm",
+      text: "Alt Image",
+      onClick: async (e) => {
+        const btn = e.currentTarget;
+        btn.disabled = true;
+        btn.textContent = "Finding Alt...";
+        try {
+          const hist = (seenExcluded[item.id] ||= []);
+          if (item.image_url && !hist.includes(item.image_url)) hist.push(item.image_url);
+          const res = await apiJson(`/api/items/${item.id}/refresh-image`, {
+            method: "POST",
+            body: JSON.stringify({ alternative: true, exclude_urls: hist }),
+          });
+          if (res.image_url && !hist.includes(res.image_url)) hist.push(res.image_url);
+          toast(res.has_image ? "Loaded alternative product image" : "No alternative image found");
+          await refreshDashboard();
+          renderDetailBody(item.id);
+        } catch (err) {
+          toast(`Alt image failed: ${err.message}`);
+        } finally {
+          btn.disabled = false;
+          btn.textContent = "Alt Image";
+        }
+      },
+    });
+
+    const customPhotoBtn = el("button", {
+      type: "button",
+      class: "btn btn-ghost btn-sm",
+      text: "Set URL",
+      onClick: async () => {
+        const url = window.prompt("Paste HTTPS product image URL:", item.image_url || "");
+        if (!url || !url.trim().startsWith("https://")) return;
+        try {
+          await apiJson(`/api/items/${item.id}/refresh-image`, {
+            method: "POST",
+            body: JSON.stringify({ image_url: url.trim() }),
+          });
+          toast("Updated product image URL");
+          await refreshDashboard();
+          renderDetailBody(item.id);
+        } catch (err) {
+          toast(`Image URL failed: ${err.message}`);
+        }
+      },
+    });
+
     const scanBtn = el("button", {
       type: "button",
       class: "btn btn-primary btn-sm",
@@ -776,7 +829,11 @@
     const hero = el("div", { class: "detail-hero" }, [
       el("div", { class: "detail-photo-box" }, [
         el("img", { src: item.image_endpoint, alt: item.name, width: 480, height: 320 }),
-        refreshPhotoBtn,
+        el("div", { style: "display:flex;gap:6px;flex-wrap:wrap;justify-content:center;" }, [
+          refreshPhotoBtn,
+          altPhotoBtn,
+          customPhotoBtn,
+        ]),
       ]),
       el("div", { style: "display:flex;flex-direction:column;gap:10px;" }, [
         el("div", { style: "display:flex;flex-wrap:wrap;gap:6px;align-items:center;" }, [
@@ -1022,6 +1079,8 @@
       progress.hidden = false;
       progress.textContent = "Researching new/used pricing, negative guards, trusted retailers, local Craigslist & fetching product photo...";
       try {
+        const radiusRaw = document.getElementById("add-radius-miles")?.value;
+        const radiusVal = radiusRaw ? Number(radiusRaw) : null;
         const created = await apiJson("/api/items/induct", {
           method: "POST",
           body: JSON.stringify({
@@ -1030,6 +1089,7 @@
             auto_activate: document.getElementById("add-auto-activate").checked,
             notify_telegram: document.getElementById("add-notify-tg").checked,
             fetch_image: true,
+            ...(radiusVal ? { radius_miles: radiusVal } : {}),
           }),
         });
         dialog.close();
@@ -1046,12 +1106,35 @@
   }
 
   function setupToolbarAndActions() {
-    for (const id of ["filter-search", "filter-status", "filter-category", "filter-hot", "sort-items"]) {
+    for (const id of ["filter-search", "filter-status", "filter-category", "filter-hot", "filter-below-target", "sort-items"]) {
       const node = document.getElementById(id);
+      if (!node) continue;
       node.addEventListener(id === "filter-search" ? "input" : "change", () => {
         if (state.data) renderWatchGrid(state.data);
       });
     }
+
+    const switchToTab = (tabId) => {
+      const tab = document.getElementById(tabId);
+      if (tab) tab.click();
+    };
+    document.getElementById("kpi-card-active")?.addEventListener("click", () => {
+      const bt = document.getElementById("filter-below-target");
+      if (bt) bt.checked = false;
+      document.getElementById("filter-status").value = "active";
+      switchToTab("tab-watchlist");
+      if (state.data) renderWatchGrid(state.data);
+    });
+    document.getElementById("kpi-card-secondhand")?.addEventListener("click", () => switchToTab("tab-deals"));
+    document.getElementById("kpi-card-below-target")?.addEventListener("click", () => {
+      const bt = document.getElementById("filter-below-target");
+      if (bt) bt.checked = true;
+      document.getElementById("filter-status").value = "all";
+      switchToTab("tab-watchlist");
+      if (state.data) renderWatchGrid(state.data);
+    });
+    document.getElementById("kpi-card-providers")?.addEventListener("click", () => switchToTab("tab-providers"));
+    document.getElementById("kpi-card-gaps")?.addEventListener("click", () => switchToTab("tab-gaps"));
 
     document.getElementById("refresh-btn").addEventListener("click", refreshDashboard);
     const hermesBtn = document.getElementById("hermes-status-btn");

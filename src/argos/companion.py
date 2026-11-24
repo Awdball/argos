@@ -421,6 +421,7 @@ def build_dashboard_payload(session: Session, settings: Settings) -> Dict[str, A
     """Assemble the complete companion dashboard state in a single query pass."""
     items = session.scalars(
         select(WatchItem)
+        .where(WatchItem.status != "archived")
         .options(
             selectinload(WatchItem.benchmarks),
             selectinload(WatchItem.listings),

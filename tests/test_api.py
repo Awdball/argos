@@ -245,6 +245,36 @@ def test_api_health_dashboard_and_images(tmp_path, monkeypatch):
         assert done_act.json()["current"]["operation"] == "idle"
         assert done_act.json()["history"][0]["duration_seconds"] == 18.4
 
+        # Test archived watches are excluded from /api/dashboard
+        arch_resp = client.patch(f"/api/items/{item_id}", json={"status": "archived"})
+        assert arch_resp.status_code == 200
+        dash_archived = client.get("/api/dashboard").json()
+        assert all(it["id"] != item_id for it in dash_archived["items"])
+
+        # Test custom radius_miles on induct
+        induct_custom = client.post(
+            "/api/items/induct",
+            json={
+                "raw_request": "Custom radius test item",
+                "radius_miles": 15,
+                "fetch_image": False,
+                "notify_telegram": False,
+                "override_payload": {
+                    "name": "Custom Radius Tool",
+                    "category": "tools",
+                    "search_queries": ["custom radius tool"],
+                    "required_tokens": ["tool"],
+                    "negative_keywords": [],
+                    "retail_baseline_usd": 400.0,
+                    "new_deal_target_usd": 320.0,
+                    "used_deal_target_usd": 200.0,
+                    "trusted_retailers": [],
+                },
+            },
+        )
+        assert induct_custom.status_code == 200
+        assert induct_custom.json()["radius_miles"] == 15
+
 
 def test_ace_hardware_default_target_and_editorial_skip():
     from argos.inductor import _merge_default_retailers

@@ -52,11 +52,14 @@ class InductRequest(BaseModel):
     auto_activate: bool = False
     notify_telegram: bool = True
     fetch_image: bool = True
+    radius_miles: Optional[int] = Field(default=None, ge=5, le=250)
     override_payload: Optional[Dict[str, Any]] = None
 
 
 class RefreshImageRequest(BaseModel):
     image_url: Optional[str] = None
+    alternative: bool = False
+    exclude_urls: List[str] = Field(default_factory=list)
 
 
 class WatchPatchRequest(BaseModel):
@@ -303,11 +306,16 @@ def create_app(
                 raise HTTPException(status_code=404, detail="Watch item not found")
             name = item.name
             queries = list(item.search_queries or [])
+            current_img_url = item.image_url or ""
         preferred = body.image_url if body else None
+        exclude_urls: List[str] = []
+        if body and body.alternative and not preferred:
+            exclude_urls = [u for u in [*body.exclude_urls, current_img_url] if u]
         meta = await fetch_product_image(
             item_name=name,
             search_queries=queries,
             preferred_url=preferred,
+            exclude_urls=exclude_urls,
         )
         with get_session() as session:
             item = session.get(WatchItem, item_id)
@@ -336,17 +344,21 @@ def create_app(
 
     @app.post("/api/items/induct")
     async def api_induct_item(req: InductRequest) -> dict:
+        override = dict(req.override_payload) if req.override_payload else None
         item_id = await induct_item(
             raw_request=req.raw_request,
             settings=cfg,
             is_hot=req.is_hot,
             auto_activate=req.auto_activate,
-            override_payload=req.override_payload,
+            override_payload=override,
             fetch_image=req.fetch_image,
         )
         with get_session() as session:
             item = session.get(WatchItem, item_id)
             assert item is not None
+            if req.radius_miles is not None:
+                item.radius_miles = int(req.radius_miles)
+                session.flush()
             payload = _serialize_item(item, include_details=True)
             card_item = item if (req.notify_telegram and bot.is_enabled) else None
         if card_item is not None:

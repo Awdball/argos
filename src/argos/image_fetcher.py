@@ -76,10 +76,12 @@ async def fetch_product_image(
     search_queries: Optional[List[str]] = None,
     retail_urls: Optional[List[str]] = None,
     preferred_url: Optional[str] = None,
+    exclude_urls: Optional[List[str]] = None,
 ) -> dict[str, Any]:
     """Discover, download, and cache a representative product image (<= 1 MB)."""
     candidates: List[str] = []
-    seen: set[str] = set()
+    excluded = {u.strip() for u in (exclude_urls or []) if u and u.strip()}
+    seen: set[str] = set(excluded)
 
     def _add(url: Optional[str]) -> None:
         if url and url.startswith("https://") and url not in seen:
@@ -101,9 +103,10 @@ async def fetch_product_image(
             image_queries.append(first_q[:80])
 
     if not preferred_url:
+        per_query = 10 if excluded else 6
         for q in image_queries[:2]:
             try:
-                found = await asyncio.to_thread(_ddgs_images_sync, q, 6)
+                found = await asyncio.to_thread(_ddgs_images_sync, q, per_query)
                 for u in found:
                     _add(u)
                 if len(candidates) >= 6:

@@ -239,6 +239,14 @@ a:hover { text-decoration: underline; }
   padding: 9px 12px;
   box-shadow: var(--card-shadow, none);
 }
+.kpi-link {
+  text-align: left;
+  color: inherit;
+  font-family: inherit;
+  cursor: pointer;
+  transition: border-color 0.15s ease, transform 0.1s ease;
+}
+.kpi-link:hover { border-color: var(--accent); transform: translateY(-1px); }
 .kpi-label { font-size: 0.72rem; color: var(--muted); font-weight: 600; text-transform: uppercase; letter-spacing: 0.03em; }
 .kpi-value { font-size: 1.35rem; font-weight: 800; margin: 1px 0; }
 .kpi-sub { font-size: 0.75rem; color: var(--muted); }

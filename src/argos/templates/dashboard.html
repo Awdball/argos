@@ -49,33 +49,33 @@
 
   <main class="container">
     <section class="kpi-grid" aria-label="Watchlist summary">
-      <article class="kpi-card">
+      <button type="button" class="kpi-card kpi-link" id="kpi-card-active">
         <div class="kpi-label">Active Watches</div>
         <div class="kpi-value" id="kpi-active">{{ summary.watches_active }}</div>
         <div class="kpi-sub" id="kpi-hot">{{ summary.watches_hot }} hot &middot; {{ summary.watches_total }} total</div>
-      </article>
-      <article class="kpi-card">
-        <div class="kpi-label">Viable 2nd-Hand</div>
+      </button>
+      <button type="button" class="kpi-card kpi-link" id="kpi-card-secondhand">
+        <div class="kpi-label">Viable 2nd-Hand &rarr;</div>
         <div class="kpi-value good" id="kpi-secondhand">{{ summary.viable_secondhand_count }}</div>
-        <div class="kpi-sub">Active local &amp; shipped candidates</div>
-      </article>
-      <article class="kpi-card">
-        <div class="kpi-label">Below-Target Retail</div>
+        <div class="kpi-sub">Click to view viable local &amp; shipped</div>
+      </button>
+      <button type="button" class="kpi-card kpi-link" id="kpi-card-below-target">
+        <div class="kpi-label">Below-Target Retail &rarr;</div>
         <div class="kpi-value accent" id="kpi-below-target">{{ summary.below_target_retail_count }}</div>
         <div class="kpi-sub" id="kpi-best-discount">
           {% if summary.best_discount_pct is not none %}Best discount {{ summary.best_discount_pct }}%{% else %}Scanning retailers{% endif %}
         </div>
-      </article>
-      <article class="kpi-card">
-        <div class="kpi-label">Providers &amp; Budget</div>
+      </button>
+      <button type="button" class="kpi-card kpi-link" id="kpi-card-providers">
+        <div class="kpi-label">Providers &amp; Budget &rarr;</div>
         <div class="kpi-value" id="kpi-providers">{{ summary.providers_configured }} / {{ summary.providers_total }}</div>
         <div class="kpi-sub" id="kpi-budget">Apify ${{ "%.2f"|format(summary.apify_spent_usd) }} / ${{ "%.2f"|format(summary.apify_budget_usd) }}</div>
-      </article>
-      <article class="kpi-card">
-        <div class="kpi-label">Open Scraper Gaps</div>
+      </button>
+      <button type="button" class="kpi-card kpi-link" id="kpi-card-gaps">
+        <div class="kpi-label">Open Scraper Gaps &rarr;</div>
         <div class="kpi-value warn" id="kpi-gaps">{{ summary.open_gaps_count }}</div>
         <div class="kpi-sub">Niche or bot-blocked sites</div>
-      </article>
+      </button>
     </section>
 
     <div class="tabs-shell">
@@ -100,10 +100,9 @@
             <input type="search" id="filter-search" class="input" placeholder="Filter by item name, query, or retailer..." aria-label="Filter watched items" />
             <select id="filter-status" class="select" aria-label="Filter by status">
               <option value="active" selected>Active</option>
-              <option value="all">All Statuses</option>
+              <option value="all">All Non-Archived</option>
               <option value="pending_approval">Pending Approval</option>
               <option value="paused">Paused</option>
-              <option value="archived">Archived</option>
             </select>
             <select id="filter-category" class="select" aria-label="Filter by category">
               <option value="all">All Categories</option>
@@ -111,6 +110,10 @@
             <label class="check-pill">
               <input type="checkbox" id="filter-hot" />
               <span>Hot Only</span>
+            </label>
+            <label class="check-pill">
+              <input type="checkbox" id="filter-below-target" />
+              <span>Below Target</span>
             </label>
             <select id="sort-items" class="select" aria-label="Sort watched items">
               <option value="deals">Sort: Best Deals</option>
@@ -195,6 +198,10 @@
         <span class="field-label">What are you hunting for?</span>
         <textarea id="add-raw-request" class="textarea" rows="3" required autofocus placeholder="e.g. Milwaukee M18 Fuel 1/2 impact wrench or kit with 5.0Ah battery"></textarea>
         <span class="field-hint">Argos will research new retail baselines, secondary comps, negative keywords, trusted retailers, geo-radius, and fetch a product image automatically.</span>
+      </label>
+      <label class="field">
+        <span class="field-label">2nd-Hand Max Distance (miles, optional)</span>
+        <input type="number" id="add-radius-miles" class="input" min="5" max="250" placeholder="Auto (based on item value, or e.g. 20)" />
       </label>
       <div class="checkbox-stack">
         <label class="check-row">
