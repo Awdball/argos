@@ -46,6 +46,7 @@ class Settings(BaseSettings):
     serpapi_key: str = ""
 
     enable_facebook_browser: bool = True
+    enable_bestbuy_browser: bool = True
     facebook_city_slug: str = "dallas"
     facebook_storage_state_path: str = ""
 

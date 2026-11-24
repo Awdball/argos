@@ -172,3 +172,21 @@ def test_deal_keyboard_has_expired_and_false_positive_and_suppresses(tmp_path):
     assert parsed[0].location_text == "Frisco, TX"
     assert _is_gated_page("https://www.facebook.com/login/", "Log in to Facebook") is True
     assert _is_gated_page("https://www.facebook.com/marketplace/dallas/search/", "Milwaukee M18") is False
+
+    # Best Buy browser card parser
+    from argos.providers.bestbuy_browser import parse_bestbuy_cards
+
+    bb_cards = [
+        {
+            "sku": "",
+            "href": "/product/instant-pot-pro-8-quart/J7G2K25CRJ",
+            "text": "Sponsored\nInstant Pot - Pro 8-Quart 10-in-1 Pressure Cooker - Black\n(573)\n$159.99\nSave $30\nWas $189.99",
+            "image_url": "https://pisces.bbystatic.com/1.jpg",
+        }
+    ]
+    bb_parsed = parse_bestbuy_cards(bb_cards)
+    assert len(bb_parsed) == 1
+    assert bb_parsed[0].external_id == "J7G2K25CRJ"
+    assert bb_parsed[0].title.startswith("Instant Pot - Pro 8-Quart")
+    assert bb_parsed[0].price_usd == 159.99
+    assert bb_parsed[0].market_type == "retail"
