@@ -1,4 +1,4 @@
-"""Universal zero-cost retailer search + JSON-LD/OpenGraph price extractor."""
+"""Universal retail search + JSON-LD/OpenGraph + Exa/snippet price extraction."""
 
 import asyncio
 import hashlib
@@ -15,7 +15,11 @@ from argos.config import Settings
 from argos.models import WatchItem
 from argos.providers.base import BaseProvider, ProviderCapabilities, ProviderResult, RawListing
 from argos.providers.registry import register_provider
-from argos.providers.web_search import search_web
+from argos.providers.web_search import (
+    fetch_urls_exa,
+    search_google_shopping_serpapi,
+    search_web,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -57,6 +61,53 @@ def _safe_float(val: Any) -> Optional[float]:
         return None
 
 
+def extract_price_from_text(
+    text: str, baseline_usd: Optional[float] = None
+) -> Optional[float]:
+    """Extract current retail price from indexed snippet/Exa text, ignoring savings/shipping."""
+    if not text:
+        return None
+    # Focus on hero section at top of page before related-parts carousels.
+    head = text[:1000]
+    # Remove savings & shipping-threshold phrases so they aren't parsed as item price.
+    cleaned = re.sub(
+        r"(?:you\s+)?save(?:\s+up\s+to)?\s*\$?\s*[\d,]+(?:\.\d{1,2})?",
+        " ",
+        head,
+        flags=re.I,
+    )
+    cleaned = re.sub(
+        r"(?:free\s+shipping\s+over|orders\s+over|shipping\s+over)\s*\$\s*[\d,]+(?:\.\d{1,2})?",
+        " ",
+        cleaned,
+        flags=re.I,
+    )
+
+    # Match both standard ($2,338.95) and split-cent ($ 456 95) price tokens.
+    pattern = re.compile(
+        r"\$\s*([\d,]+(?:\.\d{1,2}|\s+\d{2}(?=\s|$|\$)))"
+    )
+    candidates: List[float] = []
+    for m in pattern.finditer(cleaned):
+        raw_num = re.sub(r"\s+", ".", m.group(1).strip().replace(",", ""))
+        try:
+            val = float(raw_num)
+        except ValueError:
+            continue
+        if val <= 5.0 or val > 50000.0:
+            continue
+        if baseline_usd and baseline_usd >= 50.0 and val < baseline_usd * 0.30:
+            continue
+        candidates.append(round(val, 2))
+        if len(candidates) >= 2:
+            break
+
+    if not candidates:
+        return None
+    # When a page shows crossed-out MSRP followed by sale price, pick the lower valid price.
+    return min(candidates)
+
+
 def _walk_jsonld_products(obj: Any) -> List[dict]:
     found: List[dict] = []
     if isinstance(obj, list):
@@ -89,14 +140,26 @@ def extract_product_metadata(html: str) -> Optional[dict]:
             continue
         for prod in _walk_jsonld_products(parsed):
             offers = prod.get("offers")
-            offer_list = offers if isinstance(offers, list) else ([offers] if isinstance(offers, dict) else [])
+            offer_list = (
+                offers
+                if isinstance(offers, list)
+                else ([offers] if isinstance(offers, dict) else [])
+            )
             for off in offer_list:
                 if not isinstance(off, dict):
                     continue
                 price = _safe_float(off.get("price") or off.get("lowPrice"))
                 if price and price > 1.0:
                     cond_raw = str(off.get("itemCondition") or "").lower()
-                    cond = "used" if "used" in cond_raw else ("open_box" if "refurb" in cond_raw or "open" in cond_raw else "new")
+                    cond = (
+                        "used"
+                        if "used" in cond_raw
+                        else (
+                            "open_box"
+                            if "refurb" in cond_raw or "open" in cond_raw
+                            else "new"
+                        )
+                    )
                     img = prod.get("image")
                     if isinstance(img, list):
                         img = img[0] if img else ""
@@ -109,7 +172,6 @@ def extract_product_metadata(html: str) -> Optional[dict]:
                         "image_url": str(img or ""),
                     }
 
-    # Meta tag fallback (OpenGraph / schema.org microdata).
     for attr_name, attr_val in [
         ("property", "product:price:amount"),
         ("property", "og:price:amount"),
@@ -136,11 +198,11 @@ def extract_product_metadata(html: str) -> Optional[dict]:
 
 @register_provider
 class UniversalRetailProvider(BaseProvider):
-    """Searches trusted/discovered retail domains via web search + JSON-LD extraction."""
+    """Searches trusted retailers via direct JSON-LD, indexed highlights, and batch Exa fetch."""
 
     capabilities = ProviderCapabilities(
         name="universal_retail",
-        display_name="Universal Retail (Search + JSON-LD)",
+        display_name="Universal Retail (Search + JSON-LD + Exa)",
         market_type="retail",
         supports_geo=False,
         supports_shipping=False,
@@ -174,6 +236,8 @@ class UniversalRetailProvider(BaseProvider):
             hits = await search_web(search_q, settings, max_results=6)
             for h in hits:
                 url = h["url"]
+                if url.lower().endswith(".pdf"):
+                    continue
                 dom = _domain_of(url)
                 if not dom or any(dom.endswith(s) for s in _SKIP_DOMAINS):
                     continue
@@ -181,8 +245,9 @@ class UniversalRetailProvider(BaseProvider):
                     seen_urls.add(url)
                     candidate_urls.append({**h, "domain": dom})
 
-        listings: List[RawListing] = []
-        gaps: Dict[str, dict] = {}
+        listings_by_url: Dict[str, RawListing] = {}
+        needs_exa_fetch: List[dict] = []
+        blocked_reasons: Dict[str, str] = {}
 
         async with httpx.AsyncClient(
             timeout=10.0,
@@ -191,64 +256,132 @@ class UniversalRetailProvider(BaseProvider):
         ) as client:
             for idx, cand in enumerate(candidate_urls[:8]):
                 if idx > 0:
-                    await asyncio.sleep(0.3)
+                    await asyncio.sleep(0.25)
                 url = cand["url"]
                 dom = cand["domain"]
                 retailer_name = (trusted_map.get(dom) or {}).get("name") or dom
                 try:
                     resp = await client.get(url)
-                    if resp.status_code in (403, 429, 503):
-                        gaps[dom] = {
-                            "domain": dom,
-                            "retailer_name": retailer_name,
-                            "recommended_by": "universal_retail_crawl",
-                            "reason": f"HTTP {resp.status_code} anti-bot / access blocked",
-                            "sample_item": watch_item.name,
-                        }
-                        continue
-                    if resp.status_code >= 400:
-                        continue
-                    meta = extract_product_metadata(resp.text)
-                    if not meta:
-                        # Only log as a gap if it was a specifically recommended retailer.
-                        if dom in trusted_map:
-                            gaps[dom] = {
-                                "domain": dom,
-                                "retailer_name": retailer_name,
-                                "recommended_by": "universal_retail_crawl",
-                                "reason": "No Product JSON-LD or structured price tags found",
-                                "sample_item": watch_item.name,
-                            }
-                        continue
+                    if resp.status_code == 200:
+                        meta = extract_product_metadata(resp.text)
+                        if meta:
+                            ext_id = hashlib.sha1(url.encode("utf-8")).hexdigest()[:20]
+                            listings_by_url[url] = RawListing(
+                                provider="universal_retail",
+                                external_id=ext_id,
+                                url=url,
+                                title=meta.get("title") or cand.get("title") or watch_item.name,
+                                price_usd=meta["price"],
+                                shipping_usd=0.0,
+                                condition=meta.get("condition", "new"),
+                                description=cand.get("snippet", "")[:400],
+                                location_text=retailer_name,
+                                image_url=meta.get("image_url", ""),
+                                market_type="retail",
+                            )
+                            continue
+                    elif resp.status_code in (403, 429, 503):
+                        blocked_reasons[url] = f"HTTP {resp.status_code} anti-bot / access blocked"
+                except Exception as exc:
+                    blocked_reasons[url] = f"Fetch error: {str(exc)[:100]}"
+
+                # Step 2: Check if indexed search snippet already contains a valid price.
+                snip_price = extract_price_from_text(
+                    cand.get("snippet", ""), baseline_usd=watch_item.retail_baseline_usd
+                )
+                if snip_price is not None:
                     ext_id = hashlib.sha1(url.encode("utf-8")).hexdigest()[:20]
-                    listings.append(
-                        RawListing(
+                    listings_by_url[url] = RawListing(
+                        provider="universal_retail",
+                        external_id=ext_id,
+                        url=url,
+                        title=cand.get("title") or watch_item.name,
+                        price_usd=snip_price,
+                        shipping_usd=0.0,
+                        condition="new",
+                        description=cand.get("snippet", "")[:400],
+                        location_text=retailer_name,
+                        market_type="retail",
+                    )
+                else:
+                    needs_exa_fetch.append(cand)
+
+        # Step 3: Batch-fetch remaining 403-blocked or JS-rendered pages via Exa MCP.
+        if needs_exa_fetch:
+            calls += 1
+            exa_pages = await fetch_urls_exa([c["url"] for c in needs_exa_fetch])
+            for cand in needs_exa_fetch:
+                url = cand["url"]
+                dom = cand["domain"]
+                retailer_name = (trusted_map.get(dom) or {}).get("name") or dom
+                page = exa_pages.get(url)
+                if page:
+                    exa_price = extract_price_from_text(
+                        page.get("text", ""), baseline_usd=watch_item.retail_baseline_usd
+                    )
+                    if exa_price is not None:
+                        ext_id = hashlib.sha1(url.encode("utf-8")).hexdigest()[:20]
+                        listings_by_url[url] = RawListing(
                             provider="universal_retail",
                             external_id=ext_id,
                             url=url,
-                            title=meta.get("title") or cand.get("title") or watch_item.name,
-                            price_usd=meta["price"],
+                            title=page.get("title") or cand.get("title") or watch_item.name,
+                            price_usd=exa_price,
                             shipping_usd=0.0,
-                            condition=meta.get("condition", "new"),
-                            description=cand.get("snippet", "")[:400],
+                            condition="new",
+                            description=page.get("text", "")[:400],
                             location_text=retailer_name,
-                            image_url=meta.get("image_url", ""),
                             market_type="retail",
                         )
-                    )
-                except Exception as exc:
-                    logger.debug("Retail fetch error for %s: %s", url, exc)
-                    if dom in trusted_map:
-                        gaps[dom] = {
-                            "domain": dom,
-                            "retailer_name": retailer_name,
-                            "recommended_by": "universal_retail_crawl",
-                            "reason": f"Fetch error: {str(exc)[:120]}",
-                            "sample_item": watch_item.name,
-                        }
+
+        # Step 4: Optional SerpApi Google Shopping results when SERPAPI_KEY is configured.
+        if settings.serpapi_key and queries:
+            calls += 1
+            shop_rows = await search_google_shopping_serpapi(
+                queries[0], settings.serpapi_key, max_results=6
+            )
+            for row in shop_rows:
+                url = row.get("link") or row.get("product_link") or ""
+                price = _safe_float(row.get("extracted_price") or row.get("price"))
+                if not url or not price:
+                    continue
+                ext_id = hashlib.sha1(url.encode("utf-8")).hexdigest()[:20]
+                listings_by_url.setdefault(
+                    url,
+                    RawListing(
+                        provider="universal_retail",
+                        external_id=ext_id,
+                        url=url,
+                        title=row.get("title") or watch_item.name,
+                        price_usd=price,
+                        shipping_usd=0.0,
+                        condition="new",
+                        description=row.get("snippet") or "",
+                        location_text=row.get("source") or _domain_of(url),
+                        image_url=row.get("thumbnail") or "",
+                        market_type="retail",
+                    ),
+                )
+
+        # Step 5: Only record gaps for trusted retailers where ALL resolution methods failed.
+        gaps: Dict[str, dict] = {}
+        for cand in candidate_urls:
+            url = cand["url"]
+            dom = cand["domain"]
+            if url in listings_by_url or dom not in trusted_map:
+                continue
+            retailer_name = (trusted_map.get(dom) or {}).get("name") or dom
+            gaps[dom] = {
+                "domain": dom,
+                "retailer_name": retailer_name,
+                "recommended_by": "universal_retail_crawl",
+                "reason": blocked_reasons.get(url)
+                or "No Product JSON-LD or structured price tags found",
+                "sample_item": watch_item.name,
+            }
 
         return ProviderResult(
-            listings=listings,
+            listings=list(listings_by_url.values()),
             gaps=list(gaps.values()),
             api_calls=calls,
         )

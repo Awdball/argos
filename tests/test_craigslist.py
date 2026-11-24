@@ -2,7 +2,7 @@
 
 from argos.config import Settings
 from argos.providers.craigslist import parse_craigslist_html
-from argos.providers.universal_retail import extract_product_metadata
+from argos.providers.universal_retail import extract_price_from_text, extract_product_metadata
 
 
 SAMPLE_CRAIGSLIST_HTML = """
@@ -127,3 +127,14 @@ def test_extract_product_metadata_jsonld_and_og():
     assert meta2 is not None
     assert meta2["price"] == 419.99
     assert meta2["title"] == "Quick Fuel Brawler 750"
+
+
+def test_extract_price_from_text_exa_and_split_cents():
+    holley_txt = "In Stock Advertised Price $2,599.95 $2,338.95 Save $261.00 Free Shipping"
+    assert extract_price_from_text(holley_txt, baseline_usd=2510.95) == 2338.95
+
+    jegs_txt = "Billet Distributor\n$ 456 95 $507.95 You Save$51.00\n4 left in stock"
+    assert extract_price_from_text(jegs_txt, baseline_usd=507.95) == 456.95
+
+    ship_only = "Free shipping over $99! Accessories starting at $19.99."
+    assert extract_price_from_text(ship_only, baseline_usd=500.0) is None
