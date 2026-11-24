@@ -2,7 +2,6 @@
 .github
 .gitignore
 .dockerignore
-README.md
 .venv
 venv
 .pytest_cache
