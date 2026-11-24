@@ -13,6 +13,7 @@ from urllib.parse import quote_plus
 from argos.config import Settings
 from argos.models import WatchItem
 from argos.providers.base import BaseProvider, ProviderCapabilities, ProviderResult, RawListing
+from argos.providers.browser_utils import BROWSER_LOCK
 from argos.providers.registry import register_provider
 
 logger = logging.getLogger(__name__)
@@ -133,7 +134,7 @@ class BestBuyBrowserProvider(BaseProvider):
         calls = 0
         blocked_err: Optional[str] = None
 
-        async with async_playwright() as p:
+        async with BROWSER_LOCK, async_playwright() as p:
             exe_path = shutil.which("chromium") or shutil.which("chromium-browser") or None
             browser = await p.chromium.launch(
                 executable_path=exe_path,
