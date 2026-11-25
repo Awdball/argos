@@ -96,6 +96,11 @@ class HermesActivityRequest(BaseModel):
     duration_seconds: Optional[float] = None
 
 
+class ProviderGapPatchRequest(BaseModel):
+    status: str = Field(..., min_length=2)
+    reason: Optional[str] = None
+
+
 class FeedbackRequest(BaseModel):
     action: str
     notes: str = ""
@@ -511,6 +516,28 @@ def create_app(
                 }
                 for g in gaps
             ]
+
+    @app.patch("/api/provider-gaps/{gap_id}")
+    def patch_provider_gap(gap_id: int, body: ProviderGapPatchRequest) -> dict:
+        allowed = {"open", "resolved", "waf_blocked"}
+        new_status = body.status.strip().lower()
+        if new_status not in allowed:
+            raise HTTPException(status_code=400, detail=f"status must be one of {sorted(allowed)}")
+        with get_session() as session:
+            gap = session.get(ProviderGap, gap_id)
+            if not gap:
+                raise HTTPException(status_code=404, detail="Provider gap not found")
+            gap.status = new_status
+            if body.reason is not None:
+                gap.reason = body.reason[:500]
+            gap.last_seen_at = utcnow()
+            session.flush()
+            return {
+                "id": gap.id,
+                "domain": gap.domain,
+                "status": gap.status,
+                "reason": gap.reason,
+            }
 
     @app.get("/api/hermes/status")
     def get_hermes_status() -> dict:

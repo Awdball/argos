@@ -275,6 +275,17 @@ def test_api_health_dashboard_and_images(tmp_path, monkeypatch):
         assert induct_custom.status_code == 200
         assert induct_custom.json()["radius_miles"] == 15
 
+        # Test PATCH /api/provider-gaps/{id}
+        gaps = client.get("/api/provider-gaps").json()
+        assert len(gaps) >= 1
+        gid = gaps[0]["id"]
+        pg_patch = client.patch(
+            f"/api/provider-gaps/{gid}",
+            json={"status": "resolved", "reason": "Covered by custom scraper"},
+        )
+        assert pg_patch.status_code == 200
+        assert pg_patch.json()["status"] == "resolved"
+
 
 def test_ace_hardware_default_target_and_editorial_skip():
     from argos.inductor import _merge_default_retailers
