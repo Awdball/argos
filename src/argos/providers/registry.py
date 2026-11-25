@@ -27,6 +27,7 @@ def load_all_providers() -> None:
         craigslist,
         ebay,
         facebook_browser,
+        homedepot,
         reddit_classifieds,
         salterracing,
         slickdeals,
