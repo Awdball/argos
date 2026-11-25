@@ -18,9 +18,11 @@ from argos.models import WatchItem
 from argos.providers.base import BaseProvider, ProviderCapabilities, ProviderResult, RawListing
 from argos.providers.browser_utils import (
     BROWSER_LOCK,
+    fetch_html_camoufox,
     fetch_html_curl_cffi,
     get_async_playwright,
     is_browser_available,
+    is_camoufox_available,
     launch_stealth_chromium,
 )
 from argos.providers.registry import register_provider
@@ -404,6 +406,53 @@ class UniversalRetailProvider(BaseProvider):
                             location_text=retailer_name,
                             market_type="retail",
                         )
+
+        # Step 3b-camoufox: Anti-detect Firefox fallback for WAF-blocked trusted retailers (e.g., Home Depot, Ace).
+        waf_candidates = [
+            c
+            for c in needs_exa_fetch
+            if c["url"] not in listings_by_url
+            and c["domain"] in trusted_map
+            and c["domain"] not in {"summitracing.com", "autozone.com"}
+            and ("403" in blocked_reasons.get(c["url"], "") or "429" in blocked_reasons.get(c["url"], ""))
+        ][:3]
+        if waf_candidates and is_camoufox_available():
+            for cand in waf_candidates:
+                url = cand["url"]
+                dom = cand["domain"]
+                retailer_name = (trusted_map.get(dom) or {}).get("name") or dom
+                try:
+                    cfx = await fetch_html_camoufox(url)
+                    if not cfx:
+                        continue
+                    status, title, html_body, body_txt = cfx
+                    if status >= 400:
+                        continue
+                    meta = extract_product_metadata(html_body)
+                    price = meta["price"] if meta else None
+                    final_title = (meta.get("title") if meta else "") or title
+                    if price is None:
+                        price = extract_price_from_text(
+                            body_txt, baseline_usd=watch_item.retail_baseline_usd
+                        )
+                    if price is not None:
+                        ext_id = hashlib.sha1(url.encode("utf-8")).hexdigest()[:20]
+                        listings_by_url[url] = RawListing(
+                            provider="universal_retail",
+                            external_id=ext_id,
+                            url=url,
+                            title=(final_title or cand.get("title") or watch_item.name)[:250],
+                            price_usd=price,
+                            shipping_usd=0.0,
+                            condition="new",
+                            description=cand.get("snippet", "")[:400],
+                            location_text=retailer_name,
+                            image_url=meta.get("image_url", "") if meta else "",
+                            market_type="retail",
+                        )
+                        blocked_reasons.pop(url, None)
+                except Exception as exc:
+                    logger.debug("UniversalRetail Camoufox fallback failed for %s: %s", url, exc)
 
         # Step 3b: Headless Chromium fallback for JS-rendered trusted shops (non-WAF-blocked).
         js_candidates = [
