@@ -28,6 +28,7 @@ def load_all_providers() -> None:
         ebay,
         facebook_browser,
         reddit_classifieds,
+        salterracing,
         slickdeals,
         universal_retail,
         woot,
