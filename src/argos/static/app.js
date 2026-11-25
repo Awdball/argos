@@ -580,6 +580,7 @@
       ["distance", "📍 Too Far"],
       ["timing", "⏳ Bad Timing"],
       ["wrong", "🚫 Wrong Item"],
+      ["scrape_issue", "🛠️ Scrape Issue"],
       ["bought", "✅ Bought / Archive"],
     ];
     return el(
@@ -591,12 +592,27 @@
           class: "btn btn-secondary btn-sm",
           text: label,
           onClick: async () => {
+            let notes = "";
+            if (act === "scrape_issue") {
+              const input = window.prompt(
+                "Describe the scrape issue (e.g. 'Listed $25, actually $274 on Home Depot'):",
+                ""
+              );
+              if (input === null) return;
+              notes = input.trim();
+            }
             try {
               const res = await apiJson(`/api/listings/${listingId}/feedback`, {
                 method: "POST",
-                body: JSON.stringify({ action: act }),
+                body: JSON.stringify({ action: act, notes }),
               });
-              toast(`Listing #${listingId} -> ${res.state}`);
+              if (act === "scrape_issue" && res.provider_gap_domain) {
+                toast(
+                  `Scrape issue logged for ${res.provider_gap_domain} (Gap #${res.provider_gap_id})`
+                );
+              } else {
+                toast(`Listing #${listingId} -> ${res.state}`);
+              }
               await refreshDashboard();
               if (state.selectedItemId) renderDetailBody(state.selectedItemId);
             } catch (err) {

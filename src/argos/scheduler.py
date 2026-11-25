@@ -13,6 +13,7 @@ from sqlalchemy.orm import Session
 from argos.config import Settings, get_settings
 from argos.db import get_session
 from argos.inductor import upsert_provider_gap
+from argos.providers.link_resolver import domain_of
 from argos.models import (
     ApiUsageLog,
     FeedbackEvent,
@@ -76,6 +77,10 @@ def apply_listing_feedback(
         "oos": "quiesced_expired",
         "false_positive": "quiesced_false_positive",
         "fp": "quiesced_false_positive",
+        "scrape_issue": "quiesced_false_positive",
+        "bad_scrape": "quiesced_false_positive",
+        "scrape_bug": "quiesced_false_positive",
+        "wrong_price": "quiesced_false_positive",
         "bought": "bought",
     }
     new_state = state_map.get(action_clean)
@@ -90,6 +95,29 @@ def apply_listing_feedback(
         listing.snooze_until = now + timedelta(days=settings.timing_snooze_days)
     elif new_state == "bought" and item is not None:
         item.status = "archived"
+
+    gap_id = None
+    gap_domain = None
+    if action_clean in ("scrape_issue", "bad_scrape", "scrape_bug", "wrong_price"):
+        gap_dom = domain_of(listing.url) or listing.provider
+        gap_reason = (
+            f"User reported scrape issue via {listing.provider} "
+            f"(scraped ${listing.landed_cost_usd:.2f} at {listing.url[:100]})"
+        )
+        if notes.strip():
+            gap_reason = f"{gap_reason} — {notes.strip()}"
+        gap = upsert_provider_gap(
+            session,
+            domain=gap_dom,
+            retailer_name=listing.location_text or gap_dom,
+            recommended_by=f"user_scrape_report:{listing.provider}",
+            reason=gap_reason,
+            sample_item=item.name if item else listing.title,
+            reopen=True,
+        )
+        session.flush()
+        gap_id = gap.id
+        gap_domain = gap.domain
 
     session.add(
         FeedbackEvent(
@@ -106,6 +134,8 @@ def apply_listing_feedback(
         "state": listing.state,
         "snooze_until": listing.snooze_until.isoformat() if listing.snooze_until else None,
         "watch_status": item.status if item else None,
+        "provider_gap_id": gap_id,
+        "provider_gap_domain": gap_domain,
     }
 
 

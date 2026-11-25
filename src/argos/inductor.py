@@ -105,15 +105,20 @@ def upsert_provider_gap(
     recommended_by: str,
     reason: str,
     sample_item: str,
+    reopen: bool = False,
 ) -> ProviderGap:
     """Create or increment a ProviderGap entry without duplicating domains."""
-    clean_domain = (domain or "").strip().lower().lstrip("www.")
+    clean_domain = (domain or "").strip().lower().removeprefix("www.")
     if not clean_domain:
         clean_domain = re.sub(r"[^a-z0-9.-]+", "", retailer_name.lower()) or "unknown"
     existing = session.scalar(select(ProviderGap).where(ProviderGap.domain == clean_domain))
     if existing:
         existing.occurrences += 1
         existing.last_seen_at = utcnow()
+        if reopen:
+            existing.status = "open"
+            if sample_item:
+                existing.sample_item = sample_item[:255]
         if reason and reason not in existing.reason:
             existing.reason = f"{existing.reason}; {reason}"[:500]
         return existing

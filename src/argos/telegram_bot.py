@@ -160,6 +160,7 @@ def deal_quiesce_keyboard(listing_id: int) -> InlineKeyboardMarkup:
                 InlineKeyboardButton("⌛ Expired / OOS", callback_data=f"q:expired:{listing_id}"),
                 InlineKeyboardButton("🚩 False Positive", callback_data=f"q:false_positive:{listing_id}"),
             ],
+            [InlineKeyboardButton("🛠️ Scrape Issue / Bad Price", callback_data=f"q:scrape_issue:{listing_id}")],
             [InlineKeyboardButton("✅ Bought / Archive Watch", callback_data=f"q:bought:{listing_id}")],
         ]
     )
@@ -606,5 +607,12 @@ class ArgosTelegramBot:
                 "quiesced_false_positive": f"🚩 Listing #{listing_id} flagged as false positive and suppressed.",
                 "bought": f"✅ Marked Listing #{listing_id} bought and archived Watch #{res['watch_item_id']}. Congrats!",
             }
+            if action == "scrape_issue" and res.get("provider_gap_domain"):
+                reply_text = (
+                    f"🛠️ Listing #{listing_id} suppressed and logged as a scrape issue for "
+                    f"{res['provider_gap_domain']} (Gap #{res.get('provider_gap_id')}) so the scraper can be fixed."
+                )
+            else:
+                reply_text = msg_map.get(res["state"], f"Updated listing #{listing_id}.")
             await query.edit_message_reply_markup(reply_markup=None)
-            await query.message.reply_text(msg_map.get(res["state"], f"Updated listing #{listing_id}."))
+            await query.message.reply_text(reply_text)
