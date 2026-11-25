@@ -23,6 +23,11 @@ from argos.providers.browser_utils import (
     is_browser_available,
     launch_stealth_chromium,
 )
+from argos.providers.link_resolver import (
+    clean_retailer_url,
+    is_intermediary_domain,
+    resolve_and_validate_url,
+)
 from argos.providers.registry import register_provider
 from argos.providers.web_search import (
     fetch_urls_exa,
@@ -305,31 +310,64 @@ class UniversalRetailProvider(BaseProvider):
             follow_redirects=True,
             headers={"User-Agent": _USER_AGENT, "Accept-Language": "en-US,en;q=0.9"},
         ) as client:
+            async def _build_validated_listing(
+                raw_url: str,
+                title: str,
+                price: float,
+                condition: str,
+                description: str,
+                image_url: str = "",
+                page_html: str = "",
+                location_override: str = "",
+            ) -> Optional[RawListing]:
+                dom_local = _domain_of(raw_url)
+                if is_intermediary_domain(dom_local):
+                    resolved = await resolve_and_validate_url(raw_url, html=page_html, client=client)
+                    if not resolved:
+                        return None
+                    final_url = resolved
+                    dom_local = _domain_of(final_url)
+                else:
+                    final_url = clean_retailer_url(raw_url)
+                loc = location_override or (trusted_map.get(dom_local) or {}).get("name") or dom_local
+                ext_id = hashlib.sha1(final_url.encode("utf-8")).hexdigest()[:20]
+                return RawListing(
+                    provider="universal_retail",
+                    external_id=ext_id,
+                    url=final_url,
+                    title=title,
+                    price_usd=price,
+                    shipping_usd=0.0,
+                    condition=condition,
+                    description=description[:400],
+                    location_text=loc,
+                    image_url=image_url,
+                    market_type="retail",
+                )
             for idx, cand in enumerate(candidate_urls[:12]):
                 if idx > 0:
                     await asyncio.sleep(0.25)
                 url = cand["url"]
                 dom = cand["domain"]
-                retailer_name = (trusted_map.get(dom) or {}).get("name") or dom
                 try:
                     resp = await client.get(url)
                     if resp.status_code == 200:
                         meta = extract_product_metadata(resp.text)
                         if meta:
-                            ext_id = hashlib.sha1(url.encode("utf-8")).hexdigest()[:20]
-                            listings_by_url[url] = RawListing(
-                                provider="universal_retail",
-                                external_id=ext_id,
-                                url=url,
-                                title=meta.get("title") or cand.get("title") or watch_item.name,
-                                price_usd=meta["price"],
-                                shipping_usd=0.0,
-                                condition=meta.get("condition", "new"),
-                                description=cand.get("snippet", "")[:400],
-                                location_text=retailer_name,
+                            listing = await _build_validated_listing(
+                                url,
+                                meta.get("title") or cand.get("title") or watch_item.name,
+                                meta["price"],
+                                meta.get("condition", "new"),
+                                cand.get("snippet", ""),
                                 image_url=meta.get("image_url", ""),
-                                market_type="retail",
+                                page_html=resp.text,
                             )
+                            if listing:
+                                listings_by_url[listing.url] = listing
+                            continue
+                        if is_intermediary_domain(dom):
+                            # Do not fall back to snippet/Exa price if intermediary has no valid product metadata.
                             continue
                     elif resp.status_code in (403, 429, 503):
                         blocked_reasons[url] = f"HTTP {resp.status_code} anti-bot / access blocked"
@@ -337,20 +375,17 @@ class UniversalRetailProvider(BaseProvider):
                         if cffi_res and cffi_res[0] == 200:
                             meta = extract_product_metadata(cffi_res[1])
                             if meta:
-                                ext_id = hashlib.sha1(url.encode("utf-8")).hexdigest()[:20]
-                                listings_by_url[url] = RawListing(
-                                    provider="universal_retail",
-                                    external_id=ext_id,
-                                    url=url,
-                                    title=meta.get("title") or cand.get("title") or watch_item.name,
-                                    price_usd=meta["price"],
-                                    shipping_usd=0.0,
-                                    condition=meta.get("condition", "new"),
-                                    description=cand.get("snippet", "")[:400],
-                                    location_text=retailer_name,
+                                listing = await _build_validated_listing(
+                                    url,
+                                    meta.get("title") or cand.get("title") or watch_item.name,
+                                    meta["price"],
+                                    meta.get("condition", "new"),
+                                    cand.get("snippet", ""),
                                     image_url=meta.get("image_url", ""),
-                                    market_type="retail",
+                                    page_html=cffi_res[1],
                                 )
+                                if listing:
+                                    listings_by_url[listing.url] = listing
                                 blocked_reasons.pop(url, None)
                                 continue
                 except Exception as exc:
@@ -361,187 +396,166 @@ class UniversalRetailProvider(BaseProvider):
                     cand.get("snippet", ""), baseline_usd=watch_item.retail_baseline_usd
                 )
                 if snip_price is not None:
-                    ext_id = hashlib.sha1(url.encode("utf-8")).hexdigest()[:20]
-                    listings_by_url[url] = RawListing(
-                        provider="universal_retail",
-                        external_id=ext_id,
-                        url=url,
-                        title=cand.get("title") or watch_item.name,
-                        price_usd=snip_price,
-                        shipping_usd=0.0,
-                        condition="new",
-                        description=cand.get("snippet", "")[:400],
-                        location_text=retailer_name,
-                        market_type="retail",
+                    listing = await _build_validated_listing(
+                        url,
+                        cand.get("title") or watch_item.name,
+                        snip_price,
+                        "new",
+                        cand.get("snippet", ""),
                     )
+                    if listing:
+                        listings_by_url[listing.url] = listing
                 else:
                     needs_exa_fetch.append(cand)
 
-        # Step 3: Batch-fetch remaining 403-blocked or JS-rendered pages via Exa MCP.
-        if needs_exa_fetch:
-            calls += 1
-            exa_pages = await fetch_urls_exa([c["url"] for c in needs_exa_fetch])
-            for cand in needs_exa_fetch:
-                url = cand["url"]
-                dom = cand["domain"]
-                retailer_name = (trusted_map.get(dom) or {}).get("name") or dom
-                page = exa_pages.get(url)
-                if page:
-                    exa_price = extract_price_from_text(
-                        page.get("text", ""), baseline_usd=watch_item.retail_baseline_usd
-                    )
-                    if exa_price is not None:
-                        ext_id = hashlib.sha1(url.encode("utf-8")).hexdigest()[:20]
-                        listings_by_url[url] = RawListing(
-                            provider="universal_retail",
-                            external_id=ext_id,
-                            url=url,
-                            title=page.get("title") or cand.get("title") or watch_item.name,
-                            price_usd=exa_price,
-                            shipping_usd=0.0,
-                            condition="new",
-                            description=page.get("text", "")[:400],
-                            location_text=retailer_name,
-                            market_type="retail",
-                        )
-
-        # Step 3b: Headless Chromium fallback for JS-rendered trusted shops (non-WAF-blocked).
-        js_candidates = [
-            c
-            for c in needs_exa_fetch
-            if c["url"] not in listings_by_url
-            and c["domain"] in trusted_map
-            and "403" not in blocked_reasons.get(c["url"], "")
-            and "429" not in blocked_reasons.get(c["url"], "")
-        ][:3]
-        if js_candidates and is_browser_available():
-            try:
-                async_pw, using_patchright = get_async_playwright()
-
-                async with BROWSER_LOCK, async_pw() as p:
-                    browser = await launch_stealth_chromium(p)
-                    try:
-                        ctx = await browser.new_context(
-                            viewport={"width": 1440, "height": 900},
-                            timezone_id="America/Chicago",
-                            locale="en-US",
-                            user_agent=_USER_AGENT,
-                        )
-                        if not using_patchright:
-                            await ctx.add_init_script(
-                                "Object.defineProperty(navigator, 'webdriver', {get: () => undefined});"
-                            )
-                        page = await ctx.new_page()
-                        for cand in js_candidates:
-                            url = cand["url"]
-                            dom = cand["domain"]
-                            retailer_name = (trusted_map.get(dom) or {}).get("name") or dom
-                            try:
-                                resp = await page.goto(url, wait_until="domcontentloaded", timeout=18000)
-                                await asyncio.sleep(2.5)
-                                if resp and resp.status >= 400:
-                                    continue
-                                html_body = await page.content()
-                                meta = extract_product_metadata(html_body)
-                                price = meta["price"] if meta else None
-                                title = (meta.get("title") if meta else "") or await page.title()
-                                if price is None:
-                                    body_txt = await page.evaluate(
-                                        "() => document.body ? document.body.innerText.slice(0, 3000) : ''"
-                                    )
-                                    price = extract_price_from_text(
-                                        body_txt, baseline_usd=watch_item.retail_baseline_usd
-                                    )
-                                if price is not None:
-                                    ext_id = hashlib.sha1(url.encode("utf-8")).hexdigest()[:20]
-                                    listings_by_url[url] = RawListing(
-                                        provider="universal_retail",
-                                        external_id=ext_id,
-                                        url=url,
-                                        title=(title or cand.get("title") or watch_item.name)[:250],
-                                        price_usd=price,
-                                        shipping_usd=0.0,
-                                        condition="new",
-                                        description=cand.get("snippet", "")[:400],
-                                        location_text=retailer_name,
-                                        image_url=meta.get("image_url", "") if meta else "",
-                                        market_type="retail",
-                                    )
-                            except Exception as exc:
-                                logger.debug("UniversalRetail Chromium fallback failed for %s: %s", url, exc)
-                    finally:
-                        await browser.close()
-            except Exception as exc:
-                logger.debug("UniversalRetail Chromium launcher skipped: %s", exc)
-
-        # Step 3c: Price-targeted snippet search (`$`) for remaining unresolved trusted domains.
-        if trusted_map and queries:
-            resolved_domains = {_domain_of(u) for u in listings_by_url}
-            unresolved_trusted = [d for d in trusted_map if d not in resolved_domains]
-            for dom in unresolved_trusted[:4]:
+            # Step 3: Batch-fetch remaining 403-blocked or JS-rendered pages via Exa MCP.
+            if needs_exa_fetch:
                 calls += 1
-                site_target = _PRODUCT_SITE_HINTS.get(dom, dom)
-                snip_hits = await search_web(f'site:{site_target} {queries[0]} "$"', settings, max_results=2)
-                for h in snip_hits:
-                    h_url = h.get("url") or ""
-                    if not h_url or h_url in listings_by_url:
-                        continue
-                    sp = extract_price_from_text(
-                        f"{h.get('title', '')} {h.get('snippet', '')}",
-                        baseline_usd=watch_item.retail_baseline_usd,
-                    )
-                    if sp is not None:
-                        retailer_name = (trusted_map.get(dom) or {}).get("name") or dom
-                        ext_id = hashlib.sha1(h_url.encode("utf-8")).hexdigest()[:20]
-                        listings_by_url[h_url] = RawListing(
-                            provider="universal_retail",
-                            external_id=ext_id,
-                            url=h_url,
-                            title=h.get("title") or watch_item.name,
-                            price_usd=sp,
-                            shipping_usd=0.0,
-                            condition="new",
-                            description=h.get("snippet", "")[:400],
-                            location_text=retailer_name,
-                            market_type="retail",
+                exa_pages = await fetch_urls_exa([c["url"] for c in needs_exa_fetch])
+                for cand in needs_exa_fetch:
+                    url = cand["url"]
+                    page = exa_pages.get(url)
+                    if page:
+                        exa_price = extract_price_from_text(
+                            page.get("text", ""), baseline_usd=watch_item.retail_baseline_usd
                         )
-                        break
+                        if exa_price is not None:
+                            listing = await _build_validated_listing(
+                                url,
+                                page.get("title") or cand.get("title") or watch_item.name,
+                                exa_price,
+                                "new",
+                                page.get("text", ""),
+                            )
+                            if listing:
+                                listings_by_url[listing.url] = listing
 
-        # Step 4: Optional SerpApi Google Shopping results when SERPAPI_KEY is configured.
-        if settings.serpapi_key and queries:
-            calls += 1
-            shop_rows = await search_google_shopping_serpapi(
-                queries[0], settings.serpapi_key, max_results=6
-            )
-            for row in shop_rows:
-                url = row.get("link") or row.get("product_link") or ""
-                price = _safe_float(row.get("extracted_price") or row.get("price"))
-                if not url or not price:
-                    continue
-                ext_id = hashlib.sha1(url.encode("utf-8")).hexdigest()[:20]
-                listings_by_url.setdefault(
-                    url,
-                    RawListing(
-                        provider="universal_retail",
-                        external_id=ext_id,
-                        url=url,
-                        title=row.get("title") or watch_item.name,
-                        price_usd=price,
-                        shipping_usd=0.0,
-                        condition="new",
-                        description=row.get("snippet") or "",
-                        location_text=row.get("source") or _domain_of(url),
-                        image_url=row.get("thumbnail") or "",
-                        market_type="retail",
-                    ),
+            # Step 3b: Headless Chromium fallback for JS-rendered trusted shops (non-WAF-blocked).
+            js_candidates = [
+                c
+                for c in needs_exa_fetch
+                if c["url"] not in listings_by_url
+                and c["domain"] in trusted_map
+                and not is_intermediary_domain(c["domain"])
+                and "403" not in blocked_reasons.get(c["url"], "")
+                and "429" not in blocked_reasons.get(c["url"], "")
+            ][:3]
+            if js_candidates and is_browser_available():
+                try:
+                    async_pw, using_patchright = get_async_playwright()
+                    async with BROWSER_LOCK, async_pw() as p:
+                        browser = await launch_stealth_chromium(p)
+                        try:
+                            ctx = await browser.new_context(
+                                viewport={"width": 1440, "height": 900},
+                                timezone_id="America/Chicago",
+                                locale="en-US",
+                                user_agent=_USER_AGENT,
+                            )
+                            if not using_patchright:
+                                await ctx.add_init_script(
+                                    "Object.defineProperty(navigator, 'webdriver', {get: () => undefined});"
+                                )
+                            page = await ctx.new_page()
+                            for cand in js_candidates:
+                                url = cand["url"]
+                                try:
+                                    resp = await page.goto(url, wait_until="domcontentloaded", timeout=18000)
+                                    await asyncio.sleep(2.5)
+                                    if resp and resp.status >= 400:
+                                        continue
+                                    html_body = await page.content()
+                                    meta = extract_product_metadata(html_body)
+                                    price = meta["price"] if meta else None
+                                    title = (meta.get("title") if meta else "") or await page.title()
+                                    if price is None:
+                                        body_txt = await page.evaluate(
+                                            "() => document.body ? document.body.innerText.slice(0, 3000) : ''"
+                                        )
+                                        price = extract_price_from_text(
+                                            body_txt, baseline_usd=watch_item.retail_baseline_usd
+                                        )
+                                    if price is not None:
+                                        listing = await _build_validated_listing(
+                                            url,
+                                            (title or cand.get("title") or watch_item.name)[:250],
+                                            price,
+                                            "new",
+                                            cand.get("snippet", ""),
+                                            image_url=meta.get("image_url", "") if meta else "",
+                                            page_html=html_body,
+                                        )
+                                        if listing:
+                                            listings_by_url[listing.url] = listing
+                                except Exception as exc:
+                                    logger.debug("UniversalRetail Chromium fallback failed for %s: %s", url, exc)
+                        finally:
+                            await browser.close()
+                except Exception as exc:
+                    logger.debug("UniversalRetail Chromium launcher skipped: %s", exc)
+
+            # Step 3c: Price-targeted snippet search (`$`) for remaining unresolved trusted domains.
+            if trusted_map and queries:
+                resolved_domains = {_domain_of(u) for u in listings_by_url}
+                unresolved_trusted = [d for d in trusted_map if d not in resolved_domains]
+                for dom in unresolved_trusted[:4]:
+                    calls += 1
+                    site_target = _PRODUCT_SITE_HINTS.get(dom, dom)
+                    snip_hits = await search_web(f'site:{site_target} {queries[0]} "$"', settings, max_results=2)
+                    for h in snip_hits:
+                        h_url = h.get("url") or ""
+                        if not h_url or h_url in listings_by_url:
+                            continue
+                        sp = extract_price_from_text(
+                            f"{h.get('title', '')} {h.get('snippet', '')}",
+                            baseline_usd=watch_item.retail_baseline_usd,
+                        )
+                        if sp is not None:
+                            listing = await _build_validated_listing(
+                                h_url,
+                                h.get("title") or watch_item.name,
+                                sp,
+                                "new",
+                                h.get("snippet", ""),
+                            )
+                            if listing:
+                                listings_by_url[listing.url] = listing
+                                break
+
+            # Step 4: Optional SerpApi Google Shopping results when SERPAPI_KEY is configured.
+            if settings.serpapi_key and queries:
+                calls += 1
+                shop_rows = await search_google_shopping_serpapi(
+                    queries[0], settings.serpapi_key, max_results=6
                 )
+                for row in shop_rows:
+                    url = row.get("link") or row.get("product_link") or ""
+                    price = _safe_float(row.get("extracted_price") or row.get("price"))
+                    if not url or not price:
+                        continue
+                    listing = await _build_validated_listing(
+                        url,
+                        row.get("title") or watch_item.name,
+                        price,
+                        "new",
+                        row.get("snippet") or "",
+                        image_url=row.get("thumbnail") or "",
+                        location_override=row.get("source") or "",
+                    )
+                    if listing:
+                        listings_by_url.setdefault(listing.url, listing)
 
         # Step 5: Only record gaps for trusted retailers where ALL resolution methods failed.
         gaps: Dict[str, dict] = {}
         for cand in candidate_urls:
             url = cand["url"]
             dom = cand["domain"]
-            if url in listings_by_url or dom not in trusted_map:
+            if (
+                clean_retailer_url(url) in listings_by_url
+                or url in listings_by_url
+                or dom not in trusted_map
+                or is_intermediary_domain(dom)
+            ):
                 continue
             retailer_name = (trusted_map.get(dom) or {}).get("name") or dom
             gaps[dom] = {

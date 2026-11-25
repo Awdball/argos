@@ -17,6 +17,7 @@ from argos.image_fetcher import fetch_product_image
 from argos.models import PriceBenchmark, ProviderGap, WatchItem, utcnow
 from argos.ollama_client import chat_json
 from argos.providers.craigslist import parse_craigslist_html
+from argos.providers.link_resolver import is_intermediary_domain
 from argos.providers.registry import default_active_providers
 from argos.providers.web_search import search_web
 
@@ -83,8 +84,8 @@ def _merge_default_retailers(
     for tr in trusted_retailers:
         if not isinstance(tr, dict):
             continue
-        dom = str(tr.get("domain") or "").strip().lower().lstrip("www.")
-        if not dom or dom in seen:
+        dom = str(tr.get("domain") or "").strip().lower().removeprefix("www.")
+        if not dom or dom in seen or is_intermediary_domain(dom):
             continue
         seen.add(dom)
         merged.append({**tr, "domain": dom})

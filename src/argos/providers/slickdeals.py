@@ -15,6 +15,11 @@ from bs4 import BeautifulSoup
 from argos.config import Settings
 from argos.models import WatchItem
 from argos.providers.base import BaseProvider, ProviderCapabilities, ProviderResult, RawListing
+from argos.providers.link_resolver import (
+    DEAD_STATUS_CODES,
+    clean_retailer_url,
+    is_intermediary_domain,
+)
 from argos.providers.registry import register_provider
 
 logger = logging.getLogger(__name__)
@@ -156,14 +161,17 @@ class SlickdealsProvider(BaseProvider):
             if merchant_url:
                 try:
                     m_resp = await client.get(merchant_url)
-                    if m_resp.status_code in (404, 410):
+                    if m_resp.status_code in DEAD_STATUS_CODES:
                         return False
                     if m_resp.status_code == 200:
                         m_head = m_resp.text[:8000].lower()
                         if any(re.search(p, m_head) for p in _OOS_MERCHANT_PATTERNS):
                             return False
-                except Exception:
-                    pass
+                    final_url = str(m_resp.url)
+                    if final_url and not is_intermediary_domain(final_url):
+                        listing.url = clean_retailer_url(final_url)
+                except httpx.HTTPError:
+                    return False
         except Exception as exc:
             logger.debug("Slickdeals thread verify failed for %s: %s", listing.url, exc)
         return True
