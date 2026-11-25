@@ -26,7 +26,7 @@ Search strategy per watch item:
    "Holley 750 4150" also returns alternators, starters, etc.), so it is never
    a sole source of truth.
 2. For carburetor-related watch items, also crawl the canonical
-   ``/carbureutors-and-components/`` catalog (limit=100, up to 3 pages) and
+   ``/carburetors-and-components/`` catalog (limit=100, up to 3 pages) and
    **union** the tiles — this is the authoritative listing for the Holley
    750/4150 family.
 
@@ -75,7 +75,7 @@ HEADERS = {
 WAF_STATUSES = {403, 429, 503}
 MAX_SEARCH_QUERIES = 2
 MAX_CATEGORY_PAGES = 3
-CATEGORY_SLUG = "carbureutors-and-components"
+CATEGORY_SLUG = "carburetors-and-components"
 
 
 def parse_price(value: Any) -> Optional[float]:
@@ -271,7 +271,7 @@ class SalterRacingProvider(BaseProvider):
         candidates = [t for t in (parse_salter_tiles(h) for h in pages_html) for t in t]
 
         # Salter's /search.php matches loosely, so for carburetor watches
-        # we *always* union in the canonical /carbureutors-and-components/
+        # we *always* union in the canonical /carburetors-and-components/
         # catalog — it is the authoritative source for the Holley 750 / 4150
         # family and often lists variants the loose search misses.
         carb_related = bool(

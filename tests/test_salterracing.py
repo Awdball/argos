@@ -128,7 +128,7 @@ async def test_search_returns_scoreable_listings(monkeypatch):
     # Two search queries + first (and only, <50 tiles) carburetor catalog page
     assert len(calls) == 3
     assert all(u.startswith("https://www.salterracing.com/search.php?keywords=") for u in calls[:2])
-    assert calls[2].startswith("https://www.salterracing.com/carbureutors-and-components/")
+    assert calls[2].startswith("https://www.salterracing.com/carburetors-and-components/")
 
 
 async def test_search_token_filter_drops_mismatches(monkeypatch):
