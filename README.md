@@ -20,6 +20,7 @@ docker run -d --name argos \
 
 - [What Argos Does](#what-argos-does)
 - [Architecture](#architecture)
+- [Local LLM (Ollama) vs. Deterministic Responsibilities](#local-llm-ollama-vs-deterministic-responsibilities)
 - [How It Works Under the Hood](#how-it-works-under-the-hood)
 - [Alert-State & Quiesce Semantics](#alert-state--quiesce-semantics)
 - [Dynamic Geo-Radius & Check Cadence](#dynamic-geo-radius--check-cadence)
@@ -38,7 +39,7 @@ docker run -d --name argos \
 * **Universal Item Induction:** Accepts any plain-English product description (via Telegram `/add`, the web UI, or REST API) and conducts live retail, used-market, forum/Reddit, and local Craigslist research before synthesizing targets with an OpenAI-compatible LLM (e.g., Ollama `qwen3.8:27b`).
 * **Automatic Product Photo Caching:** Discovers, verifies, and caches a product image (`<= 1 MB`) directly in the database during induction, falling back cleanly to a category SVG emblem when unavailable.
 * **Bundle / Kit Intelligence:** Optional `bundle_components` (e.g., an MSD 8582 distributor listing that also includes an MSD 6AL ignition box and Blaster coil) dynamically raise the effective deal target when those companion components appear in the listing title or description.
-* **Pluggable 3-Tier Providers:** Ships with zero-cost providers out of the box (`craigslist` all-categories `search/sss`, `slickdeals` RSS, `woot`, `universal_retail` search + `schema.org/Product` JSON-LD extraction) plus credential-gated plugins for **eBay Browse API** (landed cost = price + shipping) and **Facebook Marketplace via Apify** (guarded by a hard monthly budget cap).
+* **Pluggable Zero-Cost Providers:** Ships with zero-cost providers out of the box (`craigslist` all-categories `search/sss`, `slickdeals` RSS, `woot`, `reddit_classifieds`, `salterracing`, `universal_retail` via `httpx` + `curl_cffi` + Exa MCP + Patchright Chromium, plus human-paced `facebook_browser`, `bestbuy_browser`, and `costco_browser`) alongside the official **eBay Browse API** (Sandbox & Production auto-detected; landed cost = price + shipping).
 * **Value-Scaled Geo Radius:** Automatically adjusts local pickup radius from home coordinates based on retail value (`20 mi` under `$200`, `40 mi` for `$200–$499`, `60 mi` for `$500+`).
 * **Zero-Duplicate Alerting & Price-Drop Detection:** Deduplicates per `(watch_item_id, provider, external_id)` and suppresses re-alerts unless the landed cost drops by at least `PRICE_DROP_REALERT_PCT` (default `10%`).
 * **Interactive Quiesce Feedback Loop:** One-tap Telegram inline buttons and matching web UI controls record `Not Good Enough`, `Too Far`, `Good Deal, Bad Timing`, `Wrong Item`, or `Bought / Archive`.
@@ -66,7 +67,9 @@ flowchart LR
     Registry --> WT["woot"]
     Registry --> UR["universal_retail"]
     Registry --> EB["ebay (API key)"]
-    Registry --> FB["facebook_apify (Budget cap)"]
+    Registry --> FB["facebook_browser (Patchright)"]
+    Registry --> BB["bestbuy_browser / costco_browser"]
+    Registry --> SR["salterracing / reddit_classifieds"]
 
     Sched --> Scoring["Scoring & Dedup<br/>(scoring.py)"]
     Scoring --> DB[("PostgreSQL / SQLite<br/>(models.py, db.py)")]
@@ -75,6 +78,31 @@ flowchart LR
     Inductor --> DB
     Scoring --> Bot
 ```
+
+---
+
+## Local LLM (`Ollama`) vs. Deterministic Responsibilities
+
+Argos is designed so **background deal hunting never stalls if your local LLM is busy or offline**. Only two narrow cognitive steps call Ollama (`OLLAMA_BASE_URL` / `OLLAMA_MODEL`, default `qwen3.8:27b`), and both have deterministic fallbacks:
+
+### Handled by Local LLM (`Ollama`)
+
+| Task | Module & Function | Why LLM Is Used | Fallback If Ollama Is Offline / Slow |
+| :--- | :--- | :--- | :--- |
+| **1. Item Induction Synthesis** | `inductor.py` -> `chat_json()` (`90s` timeout) | Reads live web, sold-comp, forum/Reddit, and Craigslist evidence to synthesize clean `search_queries`, `required_tokens` (`a\|b` synonyms), `negative_keywords`, `bundle_components`, `retail_baseline_usd`, `new_deal_target_usd`, `used_deal_target_usd`, `deal_likelihood`, and `trusted_retailers`. | Falls back to `_fallback_research_plan()` (regex tokenization + median price calculation) — or skips Ollama entirely when `override_payload` is supplied. |
+| **2. Optional Deal Sanity Vet** | `scoring.py` -> `vet_deal_with_ai()` (`15s` timeout) | Last-mile check on candidates that already passed all hard filters, catching subtle accessory-only or wrong-variant listings before firing a Telegram alert. | Fails open (`True`) on timeout or connection error so valid deals are never dropped. |
+
+*(Outside Argos's core Python process, **Hermes Agent** uses its own LLM loop on scheduled crons to inspect `provider_gaps`, author custom scrapers, and discover niche retailers.)*
+
+### Handled Deterministically (Zero LLM Required)
+
+| Subsystem | Module(s) | What It Does Without an LLM |
+| :--- | :--- | :--- |
+| **All Provider Scans & Scraping** | `scheduler.py`, `providers/*.py` | Runs Craigslist, eBay Browse API, Facebook/Best Buy/Costco Patchright browsers, Salter Racing, Reddit Classifieds, Slickdeals RSS, Woot, and Universal Retail (`httpx` + `curl_cffi` + Exa MCP + Patchright + `"$"` snippets). |
+| **Hard Filtering, Bundle Math & Scoring** | `scoring.py`, `geo.py` | Computes `landed_cost_usd = price + shipping`, rejects scam/junk/expired/OOS listings, enforces `required_tokens` and `negative_keywords`, adds `bundle_components` allowances, and checks Haversine distance against `radius_miles`. |
+| **Dedup, Quiesce & Price-Drop Re-Alerts** | `models.py`, `scoring.py`, `scheduler.py` | Deduplicates on `(watch_item_id, provider, external_id)`, tracks `quiesced_*` states (`price`, `distance`, `timing`, `wrong_item`, `expired`, `false_positive`, `bought`), and re-alerts on `>= 10%` drops. |
+| **Product Image Fetching & Caching** | `image_fetcher.py` | Searches via `ddgs`, verifies HTTPS image MIME/bytes (`<= 1 MB`), supports cycling alternative images, and generates category SVGs. |
+| **Telegram Bot & Companion Web UI** | `telegram_bot.py`, `companion.py`, `api.py`, `static/*` | Handles `/add`, `/check`, inline Quiesce callbacks, `historical_best_retail`, `target_gap`, `hermes_activities` log, and the 5-theme `awdash`-styled dashboard. |
 
 ---
 
@@ -125,11 +153,15 @@ All intervals are clamped by `effective_interval_minutes()` to at most `1440` mi
 | Provider | Market Type | Auth Required | Normal Cadence | HOT Cadence | Cost / Call |
 | :--- | :--- | :--- | :--- | :--- | :--- |
 | `craigslist` | Secondhand (geo) | None | `60m` | `20m` | `$0.00` |
-| `ebay` | Secondhand / New (shipping) | `EBAY_CLIENT_ID` + `EBAY_CLIENT_SECRET` | `60m` | `20m` | `$0.00` (free tier) |
+| `ebay` | Secondhand / New (shipping) | `EBAY_CLIENT_ID` + `EBAY_CLIENT_SECRET` (Sandbox auto-detected) | `60m` | `20m` | `$0.00` (free tier) |
+| `facebook_browser` | Secondhand (geo) | None (optional `FACEBOOK_STORAGE_STATE_PATH`) | `180m` | `60m` | `$0.00` |
+| `reddit_classifieds` | Secondhand (shipping) | None | `180m` | `60m` | `$0.00` |
 | `slickdeals` | Aggregator | None | `180m` | `60m` | `$0.00` |
 | `woot` | Retail | Optional `WOOT_API_KEY` | `360m` | `120m` | `$0.00` |
-| `facebook_apify` | Secondhand (geo) | `APIFY_TOKEN` | `360m` | `60m` | `~$0.02` (budget-capped) |
-| `universal_retail` | Retail (JSON-LD/OG) | None (optional `SERPAPI_KEY`) | `720m` (12h) | `240m` (4h) | `$0.00` |
+| `bestbuy_browser` | Retail (Patchright) | None | `360m` | `90m` | `$0.00` |
+| `costco_browser` | Retail (Patchright) | None | `360m` | `90m` | `$0.00` |
+| `salterracing` | Retail | None | `360m` | `120m` | `$0.00` |
+| `universal_retail` | Retail (`httpx` / `curl_cffi` / Exa / Patchright) | None (optional `SERPAPI_KEY`) | `720m` (12h) | `240m` (4h) | `$0.00` |
 
 ---
 
@@ -203,10 +235,10 @@ Deploy `ghcr.io/awdball/argos:latest` on port `8080` with `envFrom` referencing 
 | `RADIUS_BASE_MILES` / `MID` / `HIGH` | `20` / `40` / `60` | Value-tiered local radius bounds (`<$200`, `$200–$499`, `$500+`). |
 | `PRICE_DROP_REALERT_PCT` | `0.10` | Minimum price drop fraction (`10%`) required to re-alert. |
 | `TIMING_SNOOZE_DAYS` | `14` | Snooze window for `Good Deal, Bad Timing` quiesce feedback. |
-| `EBAY_CLIENT_ID` / `EBAY_CLIENT_SECRET` | `""` | Official eBay Browse API OAuth credentials. |
+| `EBAY_CLIENT_ID` / `EBAY_CLIENT_SECRET` | `""` | Official eBay Browse API OAuth credentials (auto-detects `-SBX-` sandbox keys). |
 | `WOOT_API_KEY` | `""` | Optional Woot Developer API key. |
-| `APIFY_TOKEN` | `""` | Optional Apify API token for Facebook Marketplace actor. |
-| `APIFY_MONTHLY_BUDGET_USD` | `4.50` | Hard monthly Apify spend ceiling before skipping checks. |
+| `ENABLE_FACEBOOK_BROWSER` / `BESTBUY` / `COSTCO` | `true` | Enable serialized Patchright Chromium browser providers. |
+| `FACEBOOK_CITY_SLUG` | `"dallas"` | Marketplace city slug for `facebook_browser`. |
 | `KEEPA_API_KEY` | `""` | Reserved for Keepa Amazon price-history integration. |
 | `SERPAPI_KEY` | `""` | Optional SerpApi key for retail search queries. |
 | `PORT` | `8080` | HTTP server listen port. |
@@ -235,6 +267,8 @@ Deploy `ghcr.io/awdball/argos:latest` on port `8080` with `envFrom` referencing 
 | `POST /api/listings/{id}/feedback` | Record quiesce/purchase action (`price`, `distance`, `timing`, `wrong`, `bought`). |
 | `GET /api/providers` | List all registered providers, capabilities, and current-month API usage. |
 | `GET /api/provider-gaps` | List uncommon or bot-blocked retailers recorded during research or crawls. |
+| `PATCH /api/provider-gaps/{id}` | Update gap status (`open`, `resolved`, `waf_blocked`) and reason. |
+| `GET /api/hermes/status` / `POST /api/hermes/activity` | Read/update live Hermes operation status and task duration log. |
 | `GET /api/stats` | Aggregate counts across watches, listings, alerts, and open gaps. |
 
 ---
@@ -270,7 +304,7 @@ argos/
 │   ├── scheduler.py                       # Cadence loop, budget checks, dedup & feedback transitions
 │   ├── scoring.py                         # Scam/junk/bundle/landed-cost scoring & re-alert rules
 │   ├── telegram_bot.py                    # @awdargos_bot commands & inline Quiesce cards
-│   ├── providers/                         # craigslist, ebay, facebook_apify, slickdeals, universal_retail, woot
+│   ├── providers/                         # craigslist, ebay, facebook_browser, bestbuy_browser, costco_browser, salterracing, reddit_classifieds, slickdeals, universal_retail, woot
 │   ├── static/                            # app.css, app.js (zero-bundler modern web UI)
 │   └── templates/                         # dashboard.html
 └── tests/                                 # Pytest unit & API integration suite
