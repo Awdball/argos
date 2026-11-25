@@ -1,16 +1,23 @@
 """Salter Racing (salterracing.com) — dedicated stealth retail provider.
 
-Salter Racing is a server-rendered BigCommerce 2.0 (Modez theme) shopfront.
-From our egress it serves plain HTML with HTTP 200 — no JS/WAF challenge — and
-every product tile carries structured data attributes:
+Salter Racing is a server-rendered BigCommerce 2.0 (Modez theme) shopfront
+protected by Cloudflare.  Every product tile carries structured data
+attributes:
 
 * ``data-test-info-type="brandName" | "sku"`` on inner spans
 * ``data-product-price-without-tax`` / ``data-product-rrp-price-without-tax``
   on the price spans
 
-So a lean ``httpx`` + ``BeautifulSoup`` parse (no headless browser) gets us
-price, brand, and SKU per tile — cheap, reliable, and hard to fingerprint as
-automated traffic.
+So a lean ``BeautifulSoup`` parse (no headless browser) gets us price, brand,
+and SKU per tile.
+
+Transport: Cloudflare JA3/TLS-fingerprint filters the ClientHello, so a stock
+``httpx``/OpenSSL handshake from the cluster egress is met with a 403
+"Just a moment..." challenge (verified 2026-11-24: same IP, 200 from one
+Python/TLS build, 403-challenge from the in-cluster one).  All fetches
+therefore go through ``browser_utils.fetch_html_curl_cffi`` (curl_cffi
+Chrome impersonation), with plain httpx kept only as a best-effort fallback
+in environments where curl_cffi is not installed.
 
 Search strategy per watch item:
 
@@ -19,8 +26,9 @@ Search strategy per watch item:
    "Holley 750 4150" also returns alternators, starters, etc.), so it is never
    a sole source of truth.
 2. For carburetor-related watch items, also crawl the canonical
-   ``/carburetors/`` catalog (limit=100, up to 3 pages) and **union** the
-   tiles — this is the authoritative listing for the Holley 750/4150 family.
+   ``/carbureutors-and-components/`` catalog (limit=100, up to 3 pages) and
+   **union** the tiles — this is the authoritative listing for the Holley
+   750/4150 family.
 
 Tiles are pre-filtered by the item's required tokens (AND of OR-groups) and
 negative keywords (regex).  WAF/HTTP failures are surfaced as a provider gap
@@ -46,6 +54,7 @@ from argos.providers.base import (
     ProviderResult,
     RawListing,
 )
+from argos.providers.browser_utils import fetch_html_curl_cffi
 from argos.providers.registry import register_provider
 
 logger = logging.getLogger(__name__)
@@ -66,7 +75,7 @@ HEADERS = {
 WAF_STATUSES = {403, 429, 503}
 MAX_SEARCH_QUERIES = 2
 MAX_CATEGORY_PAGES = 3
-CATEGORY_SLUG = "carburetors"
+CATEGORY_SLUG = "carbureutors-and-components"
 
 
 def parse_price(value: Any) -> Optional[float]:
@@ -186,10 +195,24 @@ class _SalterFetchError(Exception):
         self.is_waf = is_waf
 
 
-async def _fetch_page(client: httpx.AsyncClient, url: str) -> str:
-    """Fetch one page; raise _SalterFetchError on network or WAF failures."""
+async def _fetch_page(url: str) -> str:
+    """Fetch one page; raise _SalterFetchError on network or WAF failures.
+
+    Prefers curl_cffi Chrome TLS impersonation (resistant to Cloudflare's
+    JA3/ClientHello fingerprinting); falls back to stock httpx only in
+    environments where the curl_cffi package is absent.
+    """
+    result = await fetch_html_curl_cffi(url, timeout=25.0)
+    if result is not None:
+        status_code, html = result
+        if status_code in WAF_STATUSES:
+            raise _SalterFetchError(f"HTTP {status_code} from {url}", is_waf=True)
+        if status_code != 200:
+            raise _SalterFetchError(f"HTTP {status_code} from {url}")
+        return html
     try:
-        resp = await client.get(url)
+        async with httpx.AsyncClient(headers=HEADERS, follow_redirects=True, timeout=30.0) as client:
+            resp = await client.get(url)
     except httpx.HTTPError as exc:
         raise _SalterFetchError(f"network error fetching {url}: {exc}") from exc
     if resp.status_code in WAF_STATUSES:
@@ -228,13 +251,40 @@ class SalterRacingProvider(BaseProvider):
         error: Optional[str] = None
         gap: Optional[Dict[str, str]] = None
 
-        async with httpx.AsyncClient(headers=HEADERS, follow_redirects=True, timeout=30.0) as client:
-            for query in queries:
-                url = f"{SITE}/search.php?keywords={urllib.parse.quote_plus(query)}"
+        for query in queries:
+            url = f"{SITE}/search.php?keywords={urllib.parse.quote_plus(query)}"
+            try:
+                pages_html.append(await _fetch_page(url))
+            except _SalterFetchError as exc:
+                if exc.is_waf:
+                    gap = {
+                        "domain": DOMAIN,
+                        "retailer_name": "Salter Racing",
+                        "recommended_by": "salterracing",
+                        "reason": str(exc),
+                        "sample_item": (watch_item.name or "")[:255],
+                    }
+                error = str(exc)
+                break
+            await asyncio.sleep(random.uniform(1.0, 2.0))
+
+        candidates = [t for t in (parse_salter_tiles(h) for h in pages_html) for t in t]
+
+        # Salter's /search.php matches loosely, so for carburetor watches
+        # we *always* union in the canonical /carbureutors-and-components/
+        # catalog — it is the authoritative source for the Holley 750 / 4150
+        # family and often lists variants the loose search misses.
+        carb_related = bool(
+            re.search(r"carburetor|\bbbl\b|4150|750", name, re.IGNORECASE)
+            or any(re.search(r"carb|4150", q, re.IGNORECASE) for q in queries)
+        )
+        if carb_related:
+            for page in range(1, MAX_CATEGORY_PAGES + 1):
+                url = f"{SITE}/{CATEGORY_SLUG}/?limit=100&page={page}"
                 try:
-                    pages_html.append(await _fetch_page(client, url))
+                    html = await _fetch_page(url)
                 except _SalterFetchError as exc:
-                    if exc.is_waf:
+                    if exc.is_waf and gap is None:
                         gap = {
                             "domain": DOMAIN,
                             "retailer_name": "Salter Racing",
@@ -242,43 +292,15 @@ class SalterRacingProvider(BaseProvider):
                             "reason": str(exc),
                             "sample_item": (watch_item.name or "")[:255],
                         }
-                    error = str(exc)
+                    if not error:
+                        error = str(exc)
                     break
+                pages_html.append(html)
+                tiles = parse_salter_tiles(html)
+                candidates.extend(tiles)
+                if len(tiles) < 50:
+                    break  # last page (or empty)
                 await asyncio.sleep(random.uniform(1.0, 2.0))
-
-            candidates = [t for t in (parse_salter_tiles(h) for h in pages_html) for t in t]
-
-            # Salter's /search.php matches loosely, so for carburetor watches
-            # we *always* union in the canonical /carburetors/ catalog — it is
-            # the authoritative source for the Holley 750 / 4150 family and
-            # often lists variants the loose search misses.
-            carb_related = bool(
-                re.search(r"carburetor|\bbbl\b|4150|750", name, re.IGNORECASE)
-                or any(re.search(r"carb|4150", q, re.IGNORECASE) for q in queries)
-            )
-            if carb_related:
-                for page in range(1, MAX_CATEGORY_PAGES + 1):
-                    url = f"{SITE}/{CATEGORY_SLUG}/?limit=100&page={page}"
-                    try:
-                        html = await _fetch_page(client, url)
-                    except _SalterFetchError as exc:
-                        if exc.is_waf and gap is None:
-                            gap = {
-                                "domain": DOMAIN,
-                                "retailer_name": "Salter Racing",
-                                "recommended_by": "salterracing",
-                                "reason": str(exc),
-                                "sample_item": (watch_item.name or "")[:255],
-                            }
-                        if not error:
-                            error = str(exc)
-                        break
-                    pages_html.append(html)
-                    tiles = parse_salter_tiles(html)
-                    candidates.extend(tiles)
-                    if len(tiles) < 50:
-                        break  # last page (or empty)
-                    await asyncio.sleep(random.uniform(1.0, 2.0))
 
         seen_urls = set()
         listings: List[RawListing] = []

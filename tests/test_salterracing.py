@@ -1,5 +1,7 @@
 """Offline tests for the Salter Racing (salterracing.com) provider."""
 
+from typing import List, Optional, Tuple
+
 from argos.config import Settings
 from argos.models import WatchItem
 from argos.providers import salterracing as sr
@@ -26,6 +28,46 @@ SAMPLE_PAGE = """
 </div>
 </body></html>
 """
+
+
+def _install_fake_fetch(monkeypatch, status: int = 200, html: str = SAMPLE_PAGE):
+    """Replace the curl_cffi fetch with a recording fake in the provider ns."""
+
+    calls: List[str] = []
+
+    async def fake_fetch(url: str, timeout: float = 25.0) -> Optional[Tuple[int, str]]:
+        calls.append(url)
+        return (status, html)
+
+    monkeypatch.setattr(sr, "fetch_html_curl_cffi", fake_fetch)
+    return calls
+
+
+def test_fetch_page_prefers_curl_cffi(monkeypatch):
+    """Unit test _fetch_page against a faked curl_cffi helper."""
+    import asyncio
+
+    async def fake_fetch(url: str, timeout: float = 25.0):
+        return (200, "<html>hi</html>")
+
+    monkeypatch.setattr(sr, "fetch_html_curl_cffi", fake_fetch)
+    html = asyncio.run(sr._fetch_page("https://www.salterracing.com/x"))
+    assert html == "<html>hi</html>"
+
+
+def test_fetch_page_429_reports_waf(monkeypatch):
+    import asyncio
+
+    async def fake_fetch(url: str, timeout: float = 25.0):
+        return (429, "")
+
+    monkeypatch.setattr(sr, "fetch_html_curl_cffi", fake_fetch)
+    try:
+        asyncio.run(sr._fetch_page("https://www.salterracing.com/x"))
+        assert False, "expected _SalterFetchError"
+    except sr._SalterFetchError as exc:
+        assert exc.is_waf
+        assert "429" in str(exc)
 
 
 def test_parse_salter_tiles_extracts_price_brand_sku():
@@ -69,42 +111,8 @@ def _make_item(**kw) -> WatchItem:
     return WatchItem(**base)
 
 
-class _FakeResponse:
-    def __init__(self, html: str, status_code: int = 200):
-        self.text = html
-        self.status_code = status_code
-
-
-class _FakeClient:
-    def __init__(self, *args, **kwargs):
-        self.calls = []
-
-    async def __aenter__(self):
-        return self
-
-    async def __aexit__(self, *exc):
-        return False
-
-    async def get(self, url: str):
-        self.calls.append(url)
-        return _FakeResponse(SAMPLE_PAGE)
-
-
-class _FakeWafClient(_FakeClient):
-    async def get(self, url: str):
-        self.calls.append(url)
-        return _FakeResponse("", status_code=429)
-
-
 async def test_search_returns_scoreable_listings(monkeypatch):
-    class Client(_FakeClient):
-        instances = []
-
-        def __init__(self, *a, **k):
-            super().__init__(*a, **k)
-            Client.instances.append(self)
-
-    monkeypatch.setattr(sr.httpx, "AsyncClient", Client)
+    calls = _install_fake_fetch(monkeypatch)
     provider = sr.SalterRacingProvider()
     result = await provider.search(_make_item(), Settings())
     assert result.error is None
@@ -117,15 +125,14 @@ async def test_search_returns_scoreable_listings(monkeypatch):
     assert top.market_type == "retail"
     assert top.external_id == "0-17126347B"
     assert "Holley Holley" not in top.title  # no duplicate brand prefix
-    urls = [c for c in Client.instances[0].calls]
-    # Two search queries + first (and only, <50 tiles) /carburetors/ catalog page
-    assert len(urls) == 3
-    assert all(u.startswith("https://www.salterracing.com/search.php?keywords=") for u in urls[:2])
-    assert urls[2].startswith("https://www.salterracing.com/carburetors/")
+    # Two search queries + first (and only, <50 tiles) carburetor catalog page
+    assert len(calls) == 3
+    assert all(u.startswith("https://www.salterracing.com/search.php?keywords=") for u in calls[:2])
+    assert calls[2].startswith("https://www.salterracing.com/carbureutors-and-components/")
 
 
 async def test_search_token_filter_drops_mismatches(monkeypatch):
-    monkeypatch.setattr(sr.httpx, "AsyncClient", _FakeClient)
+    _install_fake_fetch(monkeypatch)
     provider = sr.SalterRacingProvider()
     item = _make_item(required_tokens=["holley", "20-370"])  # neither tile matches
     result = await provider.search(item, Settings())
@@ -133,7 +140,7 @@ async def test_search_token_filter_drops_mismatches(monkeypatch):
 
 
 async def test_search_waf_429_reports_gap(monkeypatch):
-    monkeypatch.setattr(sr.httpx, "AsyncClient", _FakeWafClient)
+    _install_fake_fetch(monkeypatch, status=429, html="")
     provider = sr.SalterRacingProvider()
     result = await provider.search(_make_item(), Settings())
     assert result.listings == []
