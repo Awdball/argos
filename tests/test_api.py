@@ -297,7 +297,7 @@ def test_ace_hardware_default_target_and_editorial_skip():
     )
     domains = [r["domain"] for r in merged]
     assert "homedepot.com" in domains
-    assert "acehardware.com" in domains
+    assert "acehardware.com" not in domains
     assert any(
         seg in "https://www.acehardware.com/tips/power-tools/overview/"
         for seg in _SKIP_URL_SEGMENTS

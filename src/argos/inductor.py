@@ -31,48 +31,7 @@ _COVERED_DOMAINS = {
     "facebook.com",
 }
 
-DEFAULT_RETAILERS_BY_CATEGORY: Dict[str, List[Dict[str, Any]]] = {
-    "tools": [
-        {
-            "name": "Ace Hardware",
-            "domain": "acehardware.com",
-            "notes": "Hardware, power tools, outdoor equipment, and seasonal deals",
-            "uncommon": False,
-        }
-    ],
-    "home": [
-        {
-            "name": "Ace Hardware",
-            "domain": "acehardware.com",
-            "notes": "Hardware, home improvement, and seasonal deals",
-            "uncommon": False,
-        }
-    ],
-    "outdoor": [
-        {
-            "name": "Ace Hardware",
-            "domain": "acehardware.com",
-            "notes": "Lawn, garden, outdoor power equipment, and grills",
-            "uncommon": False,
-        }
-    ],
-    "automotive": [
-        {
-            "name": "Ace Hardware",
-            "domain": "acehardware.com",
-            "notes": "Automotive tools, fasteners, and shop equipment",
-            "uncommon": False,
-        }
-    ],
-    "general": [
-        {
-            "name": "Ace Hardware",
-            "domain": "acehardware.com",
-            "notes": "Hardware, tools, home, and outdoor deals",
-            "uncommon": False,
-        }
-    ],
-}
+DEFAULT_RETAILERS_BY_CATEGORY: Dict[str, List[Dict[str, Any]]] = {}
 
 
 def _merge_default_retailers(
@@ -289,7 +248,7 @@ async def induct_item(
             '  "induction_summary": "concise 2-sentence buyer brief"\n'
             '}\n'
             "Mark uncommon=true for niche/forum-recommended retailers (not big-box/Amazon/eBay). "
-            "Include acehardware.com (Ace Hardware) as a valid retailer target for tools, hardware, outdoor, home, or automotive items. "
+            "Only include trusted_retailers that actually carry this specific product type based on the search evidence; do not include general hardware stores for specialty parts unless evidence shows they stock them. "
             "Populate bundle_components ONLY if the user mentioned optional kit/bundle add-ons."
         )
         user_prompt = (
