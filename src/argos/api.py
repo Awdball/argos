@@ -56,6 +56,11 @@ class InductRequest(BaseModel):
     override_payload: Optional[Dict[str, Any]] = None
 
 
+class BatchInductRequest(BaseModel):
+    items: List[InductRequest] = Field(..., min_length=1, max_length=50)
+    skip_duplicates: bool = True
+
+
 class RefreshImageRequest(BaseModel):
     image_url: Optional[str] = None
     alternative: bool = False
@@ -369,6 +374,79 @@ def create_app(
         if card_item is not None:
             await bot.send_induction_card(card_item)
         return payload
+
+    @app.post("/api/items/induct-batch")
+    async def api_induct_batch(body: BatchInductRequest) -> dict:
+        def _norm(val: str) -> str:
+            return " ".join((val or "").strip().lower().split())
+
+        existing_map: Dict[str, dict] = {}
+        if body.skip_duplicates:
+            with get_session() as session:
+                for row in session.scalars(select(WatchItem)).all():
+                    info = {"id": row.id, "name": row.name}
+                    if row.name:
+                        existing_map[_norm(row.name)] = info
+                    if row.raw_request:
+                        existing_map[_norm(row.raw_request)] = info
+
+        created: List[dict] = []
+        skipped: List[dict] = []
+        errors: List[dict] = []
+
+        for req in body.items:
+            override = dict(req.override_payload) if req.override_payload else None
+            candidate_keys = [_norm(req.raw_request)]
+            if override and override.get("name"):
+                candidate_keys.append(_norm(str(override["name"])))
+
+            if body.skip_duplicates:
+                dup = next((existing_map[k] for k in candidate_keys if k in existing_map), None)
+                if dup is not None:
+                    skipped.append(
+                        {
+                            "raw_request": req.raw_request,
+                            "existing_id": dup["id"],
+                            "existing_name": dup["name"],
+                            "reason": "duplicate",
+                        }
+                    )
+                    continue
+
+            try:
+                item_id = await induct_item(
+                    raw_request=req.raw_request,
+                    settings=cfg,
+                    is_hot=req.is_hot,
+                    auto_activate=req.auto_activate,
+                    override_payload=override,
+                    fetch_image=req.fetch_image,
+                )
+                with get_session() as session:
+                    item = session.get(WatchItem, item_id)
+                    assert item is not None
+                    if req.radius_miles is not None:
+                        item.radius_miles = int(req.radius_miles)
+                        session.flush()
+                    payload = _serialize_item(item, include_details=True)
+                    card_item = item if (req.notify_telegram and bot.is_enabled) else None
+                if card_item is not None:
+                    await bot.send_induction_card(card_item)
+                created.append(payload)
+                info = {"id": payload["id"], "name": payload["name"]}
+                existing_map[_norm(payload["name"])] = info
+                existing_map[_norm(req.raw_request)] = info
+            except Exception as exc:
+                errors.append({"raw_request": req.raw_request, "error": str(exc)})
+
+        return {
+            "created_count": len(created),
+            "skipped_count": len(skipped),
+            "error_count": len(errors),
+            "created": created,
+            "skipped": skipped,
+            "errors": errors,
+        }
 
     @app.patch("/api/items/{item_id}")
     def patch_item(item_id: int, body: WatchPatchRequest) -> dict:
